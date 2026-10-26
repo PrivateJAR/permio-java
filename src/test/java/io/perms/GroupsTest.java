@@ -217,6 +217,22 @@ class GroupsTest {
   }
 
   @Test
+  void asyncVariants() {
+    Groups groups = permio.groups();
+    assertThat(groups.createAsync("editors", "Can edit").join().getName()).isEqualTo("editors");
+    assertThat(groups.getAsync("editors").join().getName()).isEqualTo("editors");
+    assertThat(groups.updateAsync("editors", "new").join().getDescription()).isEqualTo("new");
+    assertThat(groups.addMembersAsync("editors", List.of("bob", "carol")).join().added())
+        .containsExactly("bob");
+    assertThat(groups.removeMembersAsync("editors", List.of("bob")).join().removed())
+        .containsExactly("bob");
+    groups.deleteAsync("editors").join();
+    assertThat(((DeleteGroupRequest) last.get("delete")).getName()).isEqualTo("editors");
+    assertThatThrownBy(() -> groups.getAsync("missing").join())
+        .hasCauseInstanceOf(PermioNotFoundException.class);
+  }
+
+  @Test
   void memberValidation() {
     assertThatThrownBy(() -> permio.groups().addMembers("editors", List.of("group:other")))
         .isInstanceOf(PermioValidationException.class)

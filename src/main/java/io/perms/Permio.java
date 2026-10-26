@@ -39,6 +39,7 @@ import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.time.Duration;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -53,10 +54,12 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
@@ -96,6 +99,15 @@ public final class Permio implements AutoCloseable {
   /** This SDK's version. */
   public static final String VERSION = readVersion();
 
+  /**
+   * Threads in the default executor for the {@code *Async} methods. Each async call blocks one of
+   * them for its duration; further calls queue. Pass your own with {@link Builder#executor}.
+   */
+  public static final int DEFAULT_ASYNC_THREADS = 8;
+
+  /** At most this many {@code BatchCheck} chunk requests are in flight per batch check. */
+  static final int MAX_PARALLEL_CHUNKS = 4;
+
   private static final int MAX_ITEMS = 100;
 
   private final Core core;
@@ -109,6 +121,7 @@ public final class Permio implements AutoCloseable {
     final Channel channel;
     final ManagedChannel ownedChannel;
     final ScheduledExecutorService scheduler;
+    final ResilienceInterceptor interceptor;
     final Executor executor;
     final ExecutorService ownedExecutor;
     final ApiKeys.Kind apiKeyKind;
@@ -118,6 +131,7 @@ public final class Permio implements AutoCloseable {
         Channel channel,
         ManagedChannel ownedChannel,
         ScheduledExecutorService scheduler,
+        ResilienceInterceptor interceptor,
         Executor executor,
         ExecutorService ownedExecutor,
         ApiKeys.Kind apiKeyKind,
@@ -125,6 +139,7 @@ public final class Permio implements AutoCloseable {
       this.channel = channel;
       this.ownedChannel = ownedChannel;
       this.scheduler = scheduler;
+      this.interceptor = interceptor;
       this.executor = executor;
       this.ownedExecutor = ownedExecutor;
       this.apiKeyKind = apiKeyKind;
@@ -220,13 +235,19 @@ public final class Permio implements AutoCloseable {
 
   /**
    * Closes the channel and executors this client created. A channel or executor passed to the
-   * builder is left alone. Views ({@link #withProject}, ...) do nothing on close.
+   * builder is left alone. Views ({@link #withProject}, ...) do nothing on close, but stop working
+   * when the client they came from is closed.
+   *
+   * <p>After close, every call (on this client, its views and {@link #raw()} stubs) fails at once
+   * with {@link PermioUnavailableException}, and calls waiting to retry fail instead of retrying.
    */
   @Override
   public void close() {
     if (!root) {
       return;
     }
+    // Fail calls waiting in retry backoff before stopping the scheduler that would run them.
+    core.interceptor.shutdown();
     core.scheduler.shutdownNow();
     if (core.ownedExecutor != null) {
       core.ownedExecutor.shutdown();
@@ -280,6 +301,10 @@ public final class Permio implements AutoCloseable {
     CheckResult result = checkDetailed(principal, permissions, resources);
     if (result.allowed()) {
       return true;
+    }
+    if (result.missing().isEmpty()) {
+      // Denied without saying what is missing: fail closed.
+      return false;
     }
     List<String> wanted = pick(permissions, "permission");
     for (MissingPermission m : result.missing()) {
@@ -374,11 +399,64 @@ public final class Permio implements AutoCloseable {
     return async(() -> checkDetailed(principal, permissions, resources));
   }
 
+  /** Async {@link #checkDetailed(String, String, String)}. */
+  public CompletableFuture<CheckResult> checkDetailedAsync(
+      String principal, String permission, String resource) {
+    return async(() -> checkDetailed(principal, permission, resource));
+  }
+
+  /** Async {@link #checkAll(String, Collection, Collection)}. */
+  public CompletableFuture<Boolean> checkAllAsync(
+      String principal, Collection<String> permissions, Collection<String> resources) {
+    return async(() -> checkAll(principal, permissions, resources));
+  }
+
+  /** Async {@link #checkAll(String, Collection, String)}. */
+  public CompletableFuture<Boolean> checkAllAsync(
+      String principal, Collection<String> permissions, String resource) {
+    return async(() -> checkAll(principal, permissions, resource));
+  }
+
+  /** Async {@link #checkAny(String, Collection, Collection)}. */
+  public CompletableFuture<Boolean> checkAnyAsync(
+      String principal, Collection<String> permissions, Collection<String> resources) {
+    return async(() -> checkAny(principal, permissions, resources));
+  }
+
+  /** Async {@link #checkAny(String, Collection, String)}. */
+  public CompletableFuture<Boolean> checkAnyAsync(
+      String principal, Collection<String> permissions, String resource) {
+    return async(() -> checkAny(principal, permissions, resource));
+  }
+
+  /**
+   * Async {@link #assertAllowed(String, String, String)}: completes exceptionally with {@link
+   * PermioDeniedException} when denied.
+   */
+  public CompletableFuture<Void> assertAllowedAsync(
+      String principal, String permission, String resource) {
+    return async(
+        () -> {
+          assertAllowed(principal, permission, resource);
+          return null;
+        });
+  }
+
+  /** Async {@link #assertAllowed(String, Collection, Collection)}. */
+  public CompletableFuture<Void> assertAllowedAsync(
+      String principal, Collection<String> permissions, Collection<String> resources) {
+    return async(
+        () -> {
+          assertAllowed(principal, permissions, resources);
+          return null;
+        });
+  }
+
   /**
    * Checks each resource separately and returns, per resource URI, whether {@code principal} holds
    * {@code permission} on it. The map has one entry per distinct resource, in request order. Use it
    * to filter a list you already have in memory. More than 100 resources are split into several
-   * {@code BatchCheck} calls, sent in parallel.
+   * {@code BatchCheck} calls, at most 4 in flight at a time.
    *
    * @throws PermioPermissionException if the API key lacks {@code permission.check}
    */
@@ -415,23 +493,26 @@ public final class Permio implements AutoCloseable {
     List<String> perms = pick(permissions, "permission");
     String projectName = resolveProject();
 
-    List<ListenableFuture<BatchCheckResponse>> futures = new ArrayList<>();
     PermissionsServiceGrpc.PermissionsServiceFutureStub stub = raw().permissionsFuture();
-    for (int i = 0; i < uris.size(); i += MAX_ITEMS) {
-      List<String> chunk = uris.subList(i, Math.min(uris.size(), i + MAX_ITEMS));
-      futures.add(
-          stub.batchCheck(
-              BatchCheckRequest.newBuilder()
-                  .setProjectName(projectName)
-                  .setPrincipalId(principal)
-                  .addAllResourceUris(chunk)
-                  .addAllPermissions(perms)
-                  .build()));
-    }
+    // Chunks of 100, with at most MAX_PARALLEL_CHUNKS requests in flight.
+    ArrayDeque<ListenableFuture<BatchCheckResponse>> inFlight = new ArrayDeque<>();
     Map<String, BatchCheckEntry> byUri = new HashMap<>();
     try {
-      for (ListenableFuture<BatchCheckResponse> f : futures) {
-        for (BatchCheckResult r : await(f).getResultsList()) {
+      int next = 0;
+      while (next < uris.size() || !inFlight.isEmpty()) {
+        while (next < uris.size() && inFlight.size() < MAX_PARALLEL_CHUNKS) {
+          List<String> chunk = uris.subList(next, Math.min(uris.size(), next + MAX_ITEMS));
+          next += chunk.size();
+          inFlight.add(
+              stub.batchCheck(
+                  BatchCheckRequest.newBuilder()
+                      .setProjectName(projectName)
+                      .setPrincipalId(principal)
+                      .addAllResourceUris(chunk)
+                      .addAllPermissions(perms)
+                      .build()));
+        }
+        for (BatchCheckResult r : await(inFlight.peek()).getResultsList()) {
           byUri.put(
               r.getResourceUri(),
               new BatchCheckEntry(
@@ -439,9 +520,10 @@ public final class Permio implements AutoCloseable {
                   r.getAllowed() && r.getMissingPermissionsCount() == 0,
                   r.getMissingPermissionsList()));
         }
+        inFlight.poll();
       }
     } finally {
-      for (ListenableFuture<BatchCheckResponse> f : futures) {
+      for (ListenableFuture<BatchCheckResponse> f : inFlight) {
         f.cancel(true);
       }
     }
@@ -461,6 +543,18 @@ public final class Permio implements AutoCloseable {
   public CompletableFuture<Map<String, Boolean>> batchCheckAsync(
       String principal, String permission, Collection<String> resources) {
     return async(() -> batchCheck(principal, permission, resources));
+  }
+
+  /** Async {@link #batchCheck(String, Collection, Collection)}. */
+  public CompletableFuture<Map<String, Boolean>> batchCheckAsync(
+      String principal, Collection<String> permissions, Collection<String> resources) {
+    return async(() -> batchCheck(principal, permissions, resources));
+  }
+
+  /** Async {@link #batchCheckDetailed}. */
+  public CompletableFuture<List<BatchCheckEntry>> batchCheckDetailedAsync(
+      String principal, Collection<String> permissions, Collection<String> resources) {
+    return async(() -> batchCheckDetailed(principal, permissions, resources));
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -576,6 +670,11 @@ public final class Permio implements AutoCloseable {
     return Collections.unmodifiableList(out);
   }
 
+  /** Async {@link #whoHasAccess(String)}. */
+  public CompletableFuture<List<AccessEntry>> whoHasAccessAsync(String resource) {
+    return async(() -> whoHasAccess(resource));
+  }
+
   /** Async {@link #whoHasAccess(String, String, boolean)}. */
   public CompletableFuture<List<AccessEntry>> whoHasAccessAsync(
       String resource, String permission, boolean expandGroups) {
@@ -656,9 +755,14 @@ public final class Permio implements AutoCloseable {
     return listGrants(principal, ListOptions.defaults());
   }
 
-  /** Iterates every grant of {@code principal} in the project, with the given page size. */
+  /**
+   * Iterates every grant of {@code principal} in the project, with the given page size.
+   *
+   * @throws IllegalArgumentException if {@code options} has a search filter: this RPC cannot search
+   */
   public PagedIterable<Assignment> listGrants(String principal, ListOptions options) {
     requirePrincipal(principal);
+    rejectSearch(options, "listGrants");
     String projectName = resolveProject();
     return new PagedIterable<>(
         p -> {
@@ -752,6 +856,24 @@ public final class Permio implements AutoCloseable {
                         .addAllPermissions(g.permissions)
                         .addAllRoles(g.roles)
                         .build()));
+  }
+
+  /** Async {@link #grant(String, String, String)}. */
+  public CompletableFuture<Void> grantAsync(String principal, String permission, String resource) {
+    return async(
+        () -> {
+          grant(principal, permission, resource);
+          return null;
+        });
+  }
+
+  /** Async {@link #revoke(String, String, String)}. */
+  public CompletableFuture<Void> revokeAsync(String principal, String permission, String resource) {
+    return async(
+        () -> {
+          revoke(principal, permission, resource);
+          return null;
+        });
   }
 
   /** Async {@link #grant(Grant)}. */
@@ -848,13 +970,36 @@ public final class Permio implements AutoCloseable {
     }
   }
 
-  private <T> CompletableFuture<T> async(Supplier<T> work) {
+  <T> CompletableFuture<T> async(Supplier<T> work) {
+    if (core.interceptor.isShutdown()) {
+      return failed(closedException(null));
+    }
     try {
       return CompletableFuture.supplyAsync(work, core.executor);
+    } catch (RejectedExecutionException e) {
+      return failed(core.interceptor.isShutdown() ? closedException(e) : PermioException.from(e));
     } catch (RuntimeException e) {
-      CompletableFuture<T> failed = new CompletableFuture<>();
-      failed.completeExceptionally(PermioException.from(e));
-      return failed;
+      return failed(PermioException.from(e));
+    }
+  }
+
+  private static <T> CompletableFuture<T> failed(Throwable e) {
+    CompletableFuture<T> f = new CompletableFuture<>();
+    f.completeExceptionally(e);
+    return f;
+  }
+
+  private static PermioException closedException(Throwable cause) {
+    return PermioException.fromStatus(
+        ResilienceInterceptor.closedStatus().withCause(cause), null, cause);
+  }
+
+  /** Throws when {@code options} sets a search filter on a list RPC that has none. */
+  static void rejectSearch(ListOptions options, String method) {
+    Objects.requireNonNull(options, "options");
+    if (options.search() != null) {
+      throw new IllegalArgumentException(
+          "permio: " + method + " does not support ListOptions.withSearch");
     }
   }
 
@@ -1049,8 +1194,10 @@ public final class Permio implements AutoCloseable {
     }
 
     /**
-     * Executor for the {@code *Async} methods. Defaults to a cached pool of daemon threads owned by
-     * the client. An executor passed here is not shut down by {@link Permio#close()}.
+     * Executor for the {@code *Async} methods. Each async call runs the blocking call on it, so it
+     * holds a thread for the call's duration. Defaults to a pool of {@link
+     * Permio#DEFAULT_ASYNC_THREADS} daemon threads owned by the client (further calls queue). An
+     * executor passed here is not shut down by {@link Permio#close()}.
      */
     public Builder executor(Executor executor) {
       this.executor = executor;
@@ -1100,13 +1247,25 @@ public final class Permio implements AutoCloseable {
       ExecutorService ownedExecutor = null;
       Executor exec = executor;
       if (exec == null) {
-        ownedExecutor = Executors.newCachedThreadPool(daemonThreads("permio-async"));
-        exec = ownedExecutor;
+        // Bounded: at most DEFAULT_ASYNC_THREADS blocking calls at once, the rest queue. Idle
+        // threads exit after a minute.
+        ThreadPoolExecutor pool =
+            new ThreadPoolExecutor(
+                DEFAULT_ASYNC_THREADS,
+                DEFAULT_ASYNC_THREADS,
+                60,
+                TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(),
+                daemonThreads("permio-async"));
+        pool.allowCoreThreadTimeOut(true);
+        ownedExecutor = pool;
+        exec = pool;
       }
-      Channel intercepted =
-          ClientInterceptors.intercept(
-              base, new ResilienceInterceptor(key, timeout, retryPolicy, scheduler));
-      Core core = new Core(intercepted, owned, scheduler, exec, ownedExecutor, kind, url);
+      ResilienceInterceptor interceptor =
+          new ResilienceInterceptor(key, timeout, retryPolicy, scheduler);
+      Channel intercepted = ClientInterceptors.intercept(base, interceptor);
+      Core core =
+          new Core(intercepted, owned, scheduler, interceptor, exec, ownedExecutor, kind, url);
       return new Permio(core, project, null, true);
     }
   }

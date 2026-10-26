@@ -27,6 +27,35 @@ Maven:
 </dependency>
 ```
 
+### Android, or another gRPC transport
+
+The SDK depends on `grpc-netty-shaded` at runtime, which suits servers but is large and not meant
+for Android. To use another transport (e.g. `grpc-okhttp` on Android), exclude it and add yours;
+the client picks up whichever transport is on the classpath:
+
+```kotlin
+dependencies {
+    implementation("io.perms:permio:0.1.0") {
+        exclude(group = "io.grpc", module = "grpc-netty-shaded")
+    }
+    implementation("io.grpc:grpc-okhttp:1.85.1") // match the SDK's gRPC version
+}
+```
+
+```xml
+<dependency>
+  <groupId>io.perms</groupId>
+  <artifactId>permio</artifactId>
+  <version>0.1.0</version>
+  <exclusions>
+    <exclusion>
+      <groupId>io.grpc</groupId>
+      <artifactId>grpc-netty-shaded</artifactId>
+    </exclusion>
+  </exclusions>
+</dependency>
+```
+
 ## Quick start
 
 ```java
@@ -60,11 +89,15 @@ Permio permio = Permio.builder()
 | `timeout` | 10 s | Per attempt. |
 | `retryPolicy` / `retries` | 2 retries, 100 ms base, 2 s max | See [Retries](#retries). |
 | `channel` | built from `baseUrl` | Inject any `io.grpc.Channel` (e.g. in-process for tests). Not closed by the client. |
-| `executor` | cached daemon pool | Runs the `*Async` methods. |
+| `executor` | pool of 8 daemon threads | Runs the `*Async` methods; each holds a thread for the call's duration and further calls queue. Pass your own to size it. Not shut down by the client. |
 | `configureChannel` | none | Adjust the `ManagedChannelBuilder` (keepalive, proxy, ...). |
 
 `withProject(name)` and `withCallTimeout(duration)` return views that share the channel.
 `withCallTimeout` sets an overall deadline per call, across retries. Closing a view does nothing.
+
+`close()` the client you built when done. After that every call on it, its views and its `raw()`
+stubs fails at once with `PermioUnavailableException`, and calls waiting to retry fail instead of
+hanging. A channel or executor you passed in is left open.
 
 ## API
 
@@ -75,8 +108,9 @@ permio.checkAll(principal, List.of("docs.read", "docs.write"), "/docs/1"); // ev
 permio.checkAny(principal, List.of("docs.read", "docs.admin"), "/docs/1"); // at least one
 permio.checkDetailed(principal, perms, resources);   // CheckResult: allowed + what is missing
 permio.assertAllowed(principal, "docs.read", "/docs/1"); // throws PermioDeniedException
-permio.batchCheck(principal, "docs.read", uris);     // Map<String, Boolean> in request order (>100 split up)
+permio.batchCheck(principal, "docs.read", uris);     // Map<String, Boolean> in request order (>100 split up, 4 chunks in flight)
 permio.checkAsync(principal, "docs.read", "/docs/1"); // CompletableFuture<Boolean>
+// Checks, access queries, grant/revoke, whoAmI and group writes/gets have *Async variants.
 
 // Access queries (every page is fetched)
 AccessScopes access = permio.listAccess(principal, "docs.read", "/docs");
@@ -88,7 +122,14 @@ for (Permission p : permio.listPermissions()) { ... }
 permio.listRoles(ListOptions.defaults().withSearch("edit"));
 permio.listPrincipals();
 permio.listGrants(principal);                        // alias: listAssignments
+```
 
+`withSearch` applies to `listPermissions`, `listRoles`, `listPrincipals` and `groups().list`.
+`listGrants`, `groups().listMembers` and `groups().listForPrincipal` cannot search and throw
+`IllegalArgumentException` if given a search. A list whose API cursor repeats throws
+`PermioException` rather than silently ending early.
+
+```java
 // Grants (never retried automatically)
 permio.grant(principal, "docs.read", "/docs");
 permio.grant(Grant.to(principal).on("/docs").permissions("docs.read").roles(roleId));
@@ -122,8 +163,9 @@ contain groups.
 
 ## Errors
 
-Every exception is an unchecked `PermioException` with `code()` (the gRPC status code, if any),
-`metadata()` (response headers and trailers) and the original exception as the cause.
+Every exception is an unchecked `PermioException` with `code()` (an `io.perms.ErrorCode`, if
+any; `grpcCode()` gives the `io.grpc.Status.Code`), `metadata()` (response headers and trailers)
+and the original exception as the cause.
 
 | Exception | When |
 | --- | --- |

@@ -11,8 +11,13 @@ import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.Status;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
@@ -24,6 +29,9 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>A deadline set on the stub or call ({@code withDeadlineAfter}) is the overall deadline across
  * retries; each attempt is further bounded by the client's per-attempt timeout.
+ *
+ * <p>After {@link #shutdown()} (called by {@link Permio#close()}) every new call fails at once with
+ * {@code UNAVAILABLE}, and calls waiting to retry are failed instead of being left to hang.
  */
 final class ResilienceInterceptor implements ClientInterceptor {
   static final Metadata.Key<String> AUTHORIZATION =
@@ -33,6 +41,8 @@ final class ResilienceInterceptor implements ClientInterceptor {
   private final long attemptTimeoutNanos;
   private final RetryPolicy retry;
   private final ScheduledExecutorService scheduler;
+  private final Set<RetryingCall<?, ?>> waitingToRetry = ConcurrentHashMap.newKeySet();
+  private volatile boolean shutdown;
 
   ResilienceInterceptor(
       String apiKey,
@@ -45,10 +55,34 @@ final class ResilienceInterceptor implements ClientInterceptor {
     this.scheduler = scheduler;
   }
 
+  /** The status calls fail with once the client is closed. */
+  static Status closedStatus() {
+    return Status.UNAVAILABLE.withDescription("permio: the client is closed");
+  }
+
+  boolean isShutdown() {
+    return shutdown;
+  }
+
+  /**
+   * Fails new calls from now on and fails every call waiting in retry backoff. Call it before the
+   * retry scheduler is stopped, so no retry is dropped silently.
+   */
+  void shutdown() {
+    shutdown = true;
+    List<RetryingCall<?, ?>> waiting = new ArrayList<>(waitingToRetry);
+    for (RetryingCall<?, ?> call : waiting) {
+      call.failWaitingRetry();
+    }
+  }
+
   @Override
   public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
       MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
     if (method.getType() != MethodDescriptor.MethodType.UNARY) {
+      if (shutdown) {
+        return new ClosedCall<>();
+      }
       // No public RPC streams today. Pass through with auth, without retries.
       return new ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT>(
           next.newCall(method, callOptions)) {
@@ -62,6 +96,26 @@ final class ResilienceInterceptor implements ClientInterceptor {
     }
     int maxRetries = RetryPolicy.isIdempotent(method.getFullMethodName()) ? retry.maxRetries() : 0;
     return new RetryingCall<>(method, callOptions, next, maxRetries);
+  }
+
+  /** A call made after shutdown: it fails as soon as it starts. */
+  private static final class ClosedCall<ReqT, RespT> extends ClientCall<ReqT, RespT> {
+    @Override
+    public void start(Listener<RespT> responseListener, Metadata headers) {
+      responseListener.onClose(closedStatus(), new Metadata());
+    }
+
+    @Override
+    public void request(int numMessages) {}
+
+    @Override
+    public void cancel(String message, Throwable cause) {}
+
+    @Override
+    public void halfClose() {}
+
+    @Override
+    public void sendMessage(ReqT message) {}
   }
 
   /**
@@ -89,6 +143,9 @@ final class ResilienceInterceptor implements ClientInterceptor {
     private Future<?> pendingRetry;
     private boolean cancelled;
     private boolean closed;
+    // The last failed attempt's outcome, delivered if a scheduled retry cannot run.
+    private Status lastStatus;
+    private Metadata lastMetadata;
 
     RetryingCall(
         MethodDescriptor<ReqT, RespT> method, CallOptions options, Channel next, int maxRetries) {
@@ -173,7 +230,40 @@ final class ResilienceInterceptor implements ClientInterceptor {
       }
     }
 
+    /** Called on shutdown: a retry that is waiting will never run, so close with the last error. */
+    void failWaitingRetry() {
+      Status status;
+      Metadata metadata;
+      synchronized (lock) {
+        waitingToRetry.remove(this);
+        if (closed || cancelled || pendingRetry == null) {
+          return;
+        }
+        pendingRetry.cancel(false);
+        pendingRetry = null;
+        status =
+            closedStatus().withCause(lastStatus == null ? null : lastStatus.asRuntimeException());
+        metadata = lastMetadata == null ? new Metadata() : lastMetadata;
+      }
+      closeFromOutside(status, metadata);
+    }
+
     private void startAttempt() {
+      waitingToRetry.remove(this);
+      if (shutdown) {
+        Status status;
+        Metadata metadata;
+        synchronized (lock) {
+          pendingRetry = null;
+          status =
+              lastStatus == null
+                  ? closedStatus()
+                  : closedStatus().withCause(lastStatus.asRuntimeException());
+          metadata = lastMetadata == null ? new Metadata() : lastMetadata;
+        }
+        closeFromOutside(status, metadata);
+        return;
+      }
       Context previous = context.attach();
       try {
         startAttemptInContext();
@@ -289,11 +379,26 @@ final class ResilienceInterceptor implements ClientInterceptor {
                       .withDescription("call deadline exceeded before the next retry")
                       .withCause(status.asRuntimeException(all));
             } else {
-              attempt++;
-              current = null;
-              pendingRetry =
-                  scheduler.schedule(this::startAttempt, delayNanos, TimeUnit.NANOSECONDS);
-              return;
+              // Register before checking shutdown: shutdown() sets the flag before it fails the
+              // registered calls, so a retry is either seen by it or sees the flag here.
+              waitingToRetry.add(this);
+              if (shutdown) {
+                waitingToRetry.remove(this);
+                status = closedStatus().withCause(status.asRuntimeException(all));
+              } else {
+                try {
+                  pendingRetry =
+                      scheduler.schedule(this::startAttempt, delayNanos, TimeUnit.NANOSECONDS);
+                  attempt++;
+                  current = null;
+                  lastStatus = status;
+                  lastMetadata = all;
+                  return;
+                } catch (RejectedExecutionException e) {
+                  // The scheduler is stopped: finish with this attempt's error instead of hanging.
+                  waitingToRetry.remove(this);
+                }
+              }
             }
           }
         }

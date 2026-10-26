@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Pattern;
 
 /**
@@ -209,9 +210,14 @@ public final class Groups {
     return listMembers(name, ListOptions.defaults());
   }
 
-  /** Iterates a group's members with the given page size. */
+  /**
+   * Iterates a group's members with the given page size.
+   *
+   * @throws IllegalArgumentException if {@code options} has a search filter: this RPC cannot search
+   */
   public PagedIterable<GroupMember> listMembers(String name, ListOptions options) {
     String slug = slugOf(name);
+    Permio.rejectSearch(options, "groups().listMembers");
     String project = permio.resolveProject();
     return new PagedIterable<>(
         p -> {
@@ -235,11 +241,16 @@ public final class Groups {
     return listForPrincipal(principal, ListOptions.defaults());
   }
 
-  /** Iterates the groups {@code principal} is a member of, with the given page size. */
+  /**
+   * Iterates the groups {@code principal} is a member of, with the given page size.
+   *
+   * @throws IllegalArgumentException if {@code options} has a search filter: this RPC cannot search
+   */
   public PagedIterable<Group> listForPrincipal(String principal, ListOptions options) {
     if (principal == null || principal.isEmpty()) {
       throw new PermioValidationException("permio: principal is required");
     }
+    Permio.rejectSearch(options, "groups().listForPrincipal");
     String project = permio.resolveProject();
     return new PagedIterable<>(
         p -> {
@@ -255,6 +266,47 @@ public final class Groups {
           return new PagedIterable.Page<>(res.getGroupsList(), res.getPagination().getNextCursor());
         },
         options.pageSize());
+  }
+
+  /** Async {@link #create(String)}. */
+  public CompletableFuture<Group> createAsync(String name) {
+    return permio.async(() -> create(name));
+  }
+
+  /** Async {@link #create(String, String)}. */
+  public CompletableFuture<Group> createAsync(String name, String description) {
+    return permio.async(() -> create(name, description));
+  }
+
+  /** Async {@link #get(String)}. */
+  public CompletableFuture<Group> getAsync(String name) {
+    return permio.async(() -> get(name));
+  }
+
+  /** Async {@link #update(String, String)}. */
+  public CompletableFuture<Group> updateAsync(String name, String description) {
+    return permio.async(() -> update(name, description));
+  }
+
+  /** Async {@link #delete(String)}. */
+  public CompletableFuture<Void> deleteAsync(String name) {
+    return permio.async(
+        () -> {
+          delete(name);
+          return null;
+        });
+  }
+
+  /** Async {@link #addMembers(String, Collection)}. */
+  public CompletableFuture<AddMembersResult> addMembersAsync(
+      String name, Collection<String> principals) {
+    return permio.async(() -> addMembers(name, principals));
+  }
+
+  /** Async {@link #removeMembers(String, Collection)}. */
+  public CompletableFuture<RemoveMembersResult> removeMembersAsync(
+      String name, Collection<String> principals) {
+    return permio.async(() -> removeMembers(name, principals));
   }
 
   private static String assertSlug(String slug) {

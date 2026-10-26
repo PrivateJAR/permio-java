@@ -32,7 +32,8 @@ class ErrorsTest {
     assertThat(map(Status.RESOURCE_EXHAUSTED)).isInstanceOf(PermioRateLimitException.class);
     PermioException other = map(Status.ALREADY_EXISTS.withDescription("exists"));
     assertThat(other.getClass()).isEqualTo(PermioException.class);
-    assertThat(other.code()).contains(Status.Code.ALREADY_EXISTS);
+    assertThat(other.code()).contains(ErrorCode.ALREADY_EXISTS);
+    assertThat(other.grpcCode()).contains(Status.Code.ALREADY_EXISTS);
     assertThat(other.codeName()).contains("already_exists");
     assertThat(other.getMessage()).isEqualTo("exists");
   }
@@ -116,7 +117,7 @@ class ErrorsTest {
     assertThat(PermioException.from(new CompletionException(new PermioConfigException("x"))))
         .isInstanceOf(PermioConfigException.class);
     PermioException unknown = PermioException.from(new IllegalStateException("boom"));
-    assertThat(unknown.code()).contains(Status.Code.UNKNOWN);
+    assertThat(unknown.code()).contains(ErrorCode.UNKNOWN);
     assertThat(unknown.getMessage()).isEqualTo("boom");
   }
 
@@ -128,6 +129,17 @@ class ErrorsTest {
     assertThat(e.getMessage())
         .isEqualTo("principal \"alice\" is missing docs.read, docs.write on /docs/1");
     assertThat(e.code()).isEmpty();
+    assertThat(e.grpcCode()).isEmpty();
     assertThat(e.principal()).isEqualTo("alice");
+  }
+
+  @Test
+  void errorCodeMirrorsEveryGrpcErrorCode() {
+    for (Status.Code c : Status.Code.values()) {
+      if (c != Status.Code.OK) {
+        assertThat(ErrorCode.of(c).name()).isEqualTo(c.name());
+      }
+    }
+    assertThat(ErrorCode.of(Status.Code.OK)).isEqualTo(ErrorCode.UNKNOWN);
   }
 }

@@ -18,9 +18,9 @@ import java.util.stream.StreamSupport;
  * Every item of a paginated list RPC, fetched lazily one page at a time as you iterate. Each call
  * to {@link #iterator()} or {@link #stream()} starts again from the first page.
  *
- * <p>Following {@code next_cursor} stops when the API returns an empty cursor, or one it already
- * returned (which would otherwise loop forever). API errors are thrown from {@code hasNext()} as
- * {@link PermioException}s.
+ * <p>Following {@code next_cursor} stops when the API returns an empty cursor. A cursor the API
+ * already returned would loop forever, so it is an error rather than a silent end of the listing.
+ * API errors are thrown from {@code hasNext()} as {@link PermioException}s.
  *
  * @param <T> the item type
  */
@@ -106,9 +106,14 @@ public final class PagedIterable<T> implements Iterable<T> {
         }
         current = page.items.iterator();
         String next = page.nextCursor;
-        // An empty cursor ends the listing. A repeated one would loop forever, so stop there too.
-        if (next.isEmpty() || !seen.add(next)) {
+        // An empty cursor ends the listing. A repeated one would loop forever, and stopping there
+        // would silently return a partial list, so fail instead.
+        if (next.isEmpty()) {
           last = true;
+        } else if (!seen.add(next)) {
+          throw new PermioException(
+              "permio: inconsistent response from the API: pagination cursor repeated; the"
+                  + " listing would not end");
         } else {
           cursor = next;
         }

@@ -92,6 +92,11 @@ final class TestServer implements AutoCloseable {
     return b.build();
   }
 
+  /** The in-process channel the clients use. */
+  ManagedChannel channel() {
+    return channel;
+  }
+
   long count(String method) {
     return calls.stream().filter(c -> c.method.equals(method)).count();
   }

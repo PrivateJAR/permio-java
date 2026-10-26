@@ -147,9 +147,13 @@ public final class AccessScopes {
 
   /**
    * The subtree scopes' URIs, for filtering a database by path prefix. A URI {@code p} here stands
-   * for {@code p} itself and everything below it, so match {@code path = p OR path LIKE p || '/%'};
-   * a bare prefix match would also match {@code /docs/12} for {@code /docs/1}. Prefixes already
-   * covered by a shorter one are dropped.
+   * for {@code p} itself and everything below it, so match {@code path = p} or {@code path}
+   * starting with {@code p + "/"}; a bare prefix match would also match {@code /docs/12} for {@code
+   * /docs/1}. Use a literal starts-with test, e.g. PostgreSQL {@code starts_with(path, p || '/')}
+   * or {@code left(path, length(p) + 1) = p || '/'}, not {@code LIKE}: {@code _} and {@code %} are
+   * {@code LIKE} wildcards, and {@code _} is common in URIs (and is Permio's own wildcard segment).
+   * If you must use {@code LIKE}, escape backslash, {@code %} and {@code _} in {@code p} first.
+   * Prefixes already covered by a shorter one are dropped.
    *
    * <p>Pattern scopes cannot be expressed as a prefix and are not included: see {@link #patterns()}
    * and {@link #toRegex()}, or {@link #hasPatterns()}.
