@@ -87,6 +87,14 @@ val versionResource =
     }
 sourceSets.main { resources.srcDir(versionResource) }
 
+// The protobuf plugin copies the .proto sources into the jar at the classpath root (proto/...),
+// where they could clash with other jars' files. The compiled descriptors are in the generated
+// classes, so the .proto files are not needed at runtime: leave them out.
+tasks.processResources {
+    exclude("**/*.proto")
+    includeEmptyDirs = false
+}
+
 tasks.jar {
     manifest {
         attributes(
@@ -173,6 +181,14 @@ mavenPublishing {
                 url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
                 distribution = "repo"
             }
+        }
+        organization {
+            name = "PrivateJAR"
+            url = "https://github.com/PrivateJAR"
+        }
+        issueManagement {
+            system = "GitHub"
+            url = "https://github.com/PrivateJAR/permio-java/issues"
         }
         developers {
             developer {

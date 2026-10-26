@@ -2,14 +2,15 @@ package io.perms;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import io.perms.proto.permissions.v1.CreatePermissionRequest;
 import io.perms.proto.permissions.v1.DeletePermissionRequest;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
@@ -37,7 +38,6 @@ import org.junit.jupiter.api.TestMethodOrder;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class LiveIntegrationTest {
-  private static final Pattern PROD = Pattern.compile("^https?://(temp-)?api\\.perms\\.io/?$");
 
   private static final String ALICE = "sdk-it-java-alice";
   private static final String BOB = "sdk-it-java-bob";
@@ -54,6 +54,47 @@ class LiveIntegrationTest {
   private Permio permio;
   private String project;
 
+  /**
+   * The test writes, so it runs only against an allowlist of non-production hosts: the dev API,
+   * loopback, and the reserved {@code .localhost} / {@code .test} names. The URL is parsed, so
+   * tricks like {@code https://api.perms.io#dev-api.perms.io} or {@code
+   * https://dev-api.perms.io@api.perms.io} do not pass.
+   */
+  static boolean isAllowedTarget(String baseUrl) {
+    URI uri;
+    try {
+      uri = new URI(baseUrl.trim());
+    } catch (URISyntaxException e) {
+      return false;
+    }
+    String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(Locale.ROOT);
+    if (!scheme.equals("https") && !scheme.equals("http")) {
+      return false;
+    }
+    if (uri.getRawUserInfo() != null || uri.getRawQuery() != null || uri.getRawFragment() != null) {
+      return false;
+    }
+    String path = uri.getRawPath();
+    if (path != null && !path.isEmpty() && !path.equals("/")) {
+      return false;
+    }
+    String host = uri.getHost();
+    if (host == null) {
+      return false;
+    }
+    host = host.toLowerCase(Locale.ROOT);
+    if (host.endsWith(".")) {
+      host = host.substring(0, host.length() - 1);
+    }
+    return host.equals("dev-api.perms.io")
+        || host.equals("localhost")
+        || host.equals("127.0.0.1")
+        || host.equals("[::1]")
+        || host.equals("::1")
+        || (host.endsWith(".localhost") && host.length() > ".localhost".length())
+        || (host.endsWith(".test") && host.length() > ".test".length());
+  }
+
   private static String envOr(String name, String fallback) {
     String v = System.getenv(name);
     return v == null || v.isEmpty() ? fallback : v;
@@ -62,10 +103,11 @@ class LiveIntegrationTest {
   @BeforeAll
   void setUp() {
     assumeTrue(apiKey != null && !apiKey.isEmpty(), "PERMIO_API_KEY is not set");
-    assumeFalse(
-        PROD.matcher(baseUrl).matches()
-            || baseUrl.replaceAll("/+$", "").equals(Permio.DEFAULT_BASE_URL),
-        "refusing to run the integration tests against production");
+    assumeTrue(
+        isAllowedTarget(baseUrl),
+        "refusing to run the integration tests against "
+            + baseUrl
+            + ": only dev-api.perms.io, localhost and *.localhost / *.test hosts are allowed");
     try (Permio probe = Permio.builder().apiKey(apiKey).baseUrl(baseUrl).build()) {
       String fromEnv = System.getenv("PERMIO_PROJECT");
       project =

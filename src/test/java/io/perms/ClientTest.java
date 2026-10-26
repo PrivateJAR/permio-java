@@ -193,6 +193,60 @@ class ClientTest {
             }));
     assertThat(permio.checkAny("alice", List.of("a", "b"), "/x")).isTrue();
     assertThat(permio.checkAny("alice", List.of("a", "b"), List.of("/x", "/y"))).isFalse();
+    assertThat(permio.checkAnyAsync("alice", List.of("a", "b"), "/x").join()).isTrue();
+    assertThat(permio.checkAllAsync("alice", List.of("a", "b"), "/x").join()).isFalse();
+  }
+
+  @Test
+  void checkAnyFailsClosedOnADenialWithoutDetails() {
+    start(new CheckService(r -> CheckPermissionResponse.newBuilder().setPassed(false).build()));
+    assertThat(permio.checkAny("alice", List.of("a", "b"), "/x")).isFalse();
+    assertThat(permio.checkAny("alice", List.of("a"), List.of("/x", "/y"))).isFalse();
+  }
+
+  @Test
+  void defaultAsyncExecutorIsBounded() throws Exception {
+    java.util.concurrent.atomic.AtomicInteger inFlight =
+        new java.util.concurrent.atomic.AtomicInteger();
+    java.util.concurrent.atomic.AtomicInteger maxInFlight =
+        new java.util.concurrent.atomic.AtomicInteger();
+    start(
+        new CheckService(
+            r -> {
+              maxInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
+              try {
+                Thread.sleep(50);
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+              }
+              inFlight.decrementAndGet();
+              return allowed();
+            }));
+    List<java.util.concurrent.CompletableFuture<Boolean>> futures = new ArrayList<>();
+    for (int i = 0; i < 3 * Permio.DEFAULT_ASYNC_THREADS; i++) {
+      futures.add(permio.checkAsync("alice", "docs.read", "/docs/" + i));
+    }
+    for (java.util.concurrent.CompletableFuture<Boolean> f : futures) {
+      assertThat(f.get(20, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+    }
+    assertThat(maxInFlight.get()).isBetween(1, Permio.DEFAULT_ASYNC_THREADS);
+  }
+
+  @Test
+  void asyncMethodsUseACallerSuppliedExecutor() {
+    List<Runnable> ran = new CopyOnWriteArrayList<>();
+    server = new TestServer(new CheckService(r -> allowed()));
+    permio =
+        server.client(
+            b ->
+                b.executor(
+                    task -> {
+                      ran.add(task);
+                      task.run();
+                    }));
+    assertThat(permio.checkAllAsync("alice", List.of("a"), List.of("/x")).join()).isTrue();
+    permio.assertAllowedAsync("alice", "a", "/x").join();
+    assertThat(ran).hasSize(2);
   }
 
   @Test
@@ -296,6 +350,36 @@ class ClientTest {
     assertThat(new ArrayList<>(result.keySet())).isEqualTo(uris);
     assertThat(result.get("/d/2")).isTrue();
     assertThat(result.get("/d/3")).isFalse();
+  }
+
+  @Test
+  void batchCheckSendsAtMostFourChunksAtOnce() {
+    java.util.concurrent.atomic.AtomicInteger inFlight =
+        new java.util.concurrent.atomic.AtomicInteger();
+    java.util.concurrent.atomic.AtomicInteger maxInFlight =
+        new java.util.concurrent.atomic.AtomicInteger();
+    BatchService inner = new BatchService();
+    start(
+        new PermissionsServiceGrpc.PermissionsServiceImplBase() {
+          @Override
+          public void batchCheck(BatchCheckRequest r, StreamObserver<BatchCheckResponse> o) {
+            maxInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
+            try {
+              Thread.sleep(30);
+            } catch (InterruptedException e) {
+              Thread.currentThread().interrupt();
+            }
+            inFlight.decrementAndGet();
+            inner.batchCheck(r, o);
+          }
+        });
+    List<String> uris =
+        IntStream.range(0, 1000).mapToObj(i -> "/d/" + i).collect(Collectors.toList());
+    List<BatchCheckEntry> result =
+        permio.batchCheckDetailedAsync("alice", List.of("docs.read"), uris).join();
+    assertThat(result).hasSize(1000);
+    assertThat(inner.requests).hasSize(10);
+    assertThat(maxInFlight.get()).isBetween(2, Permio.MAX_PARALLEL_CHUNKS);
   }
 
   @Test
@@ -461,11 +545,29 @@ class ClientTest {
   }
 
   @Test
-  void listStopsOnARepeatedCursor() {
+  void aRepeatedCursorIsAnError() {
     PermissionPages svc = new PermissionPages("same", "same", "never");
     start(svc);
-    assertThat(permio.listPermissions().toList()).hasSize(4);
+    assertThatThrownBy(() -> permio.listPermissions().toList())
+        .isInstanceOf(PermioException.class)
+        .hasMessageContaining("cursor repeated");
     assertThat(svc.requests).hasSize(2);
+  }
+
+  @Test
+  void searchIsRejectedWhereTheRpcCannotSearch() {
+    start(new PermissionsServiceGrpc.PermissionsServiceImplBase() {});
+    ListOptions search = ListOptions.defaults().withSearch("x");
+    assertThatThrownBy(() -> permio.listGrants("alice", search))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("listGrants");
+    assertThatThrownBy(() -> permio.groups().listMembers("editors", search))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(() -> permio.groups().listForPrincipal("alice", search))
+        .isInstanceOf(IllegalArgumentException.class);
+    // Page size alone is fine.
+    permio.listGrants("alice", ListOptions.defaults().withPageSize(5));
+    assertThat(server.calls).isEmpty();
   }
 
   @Test

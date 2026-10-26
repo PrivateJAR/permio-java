@@ -16,9 +16,10 @@ import java.util.regex.Pattern;
 /**
  * Base class of every exception thrown by the SDK. It is unchecked.
  *
- * <p>{@link #code()} is the gRPC status code when the error came from (or maps to) an API status,
- * and {@link #metadata()} holds the response headers and trailers sent with it. The subclasses
- * mirror the gRPC codes a caller usually handles:
+ * <p>{@link #code()} is the status code (an SDK {@link ErrorCode}; {@link #grpcCode()} gives the
+ * gRPC one) when the error came from (or maps to) an API status, and {@link #metadata()} holds the
+ * response headers and trailers sent with it. The subclasses mirror the gRPC codes a caller usually
+ * handles:
  *
  * <ul>
  *   <li>{@link PermioConfigException}: the client is misconfigured (no gRPC code)
@@ -53,14 +54,19 @@ public class PermioException extends RuntimeException {
     this.metadata = metadata != null ? metadata : new Metadata();
   }
 
+  /** The status code, when the error came from (or maps to) an API status. */
+  public Optional<ErrorCode> code() {
+    return grpcCode().map(ErrorCode::of);
+  }
+
   /** The gRPC status code, when the error came from (or maps to) an API status. */
-  public Optional<Status.Code> code() {
+  public Optional<Status.Code> grpcCode() {
     return Optional.ofNullable(code);
   }
 
-  /** Lower-case gRPC code name, e.g. {@code "permission_denied"}, if there is a code. */
+  /** Lower-case code name, e.g. {@code "permission_denied"}, if there is a code. */
   public Optional<String> codeName() {
-    return code().map(c -> c.name().toLowerCase(Locale.ROOT));
+    return grpcCode().map(c -> c.name().toLowerCase(Locale.ROOT));
   }
 
   /** Response headers and trailers sent with the error. Empty when there were none. */
