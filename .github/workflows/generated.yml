@@ -1,0 +1,57 @@
+name: Vendored protos
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Re-copies src/main/proto from the proto commit pinned in .proto-version and
+  # fails if the committed files differ, so they are never edited by hand and
+  # always match a real proto release. The Java code is generated from them at
+  # build time, so only the .proto files are compared.
+  check:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: useblacksmith/checkout@v1
+
+      - name: Read the pinned proto version
+        id: pin
+        env:
+          HAS_KEY: ${{ secrets.PROTO_DEPLOY_KEY != '' }}
+        run: |
+          version="$(sed -n 's/^version=//p' .proto-version)"
+          commit="$(sed -n 's/^commit=//p' .proto-version)"
+          if ! echo "$commit" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error file=.proto-version::commit must be a full 40-character SHA"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          # The proto repo is private; without a deploy key the check is skipped.
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::warning::PROTO_DEPLOY_KEY is not available; skipping the vendored-proto check."
+          fi
+          echo "enabled=$HAS_KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout the pinned protos
+        if: steps.pin.outputs.enabled == 'true'
+        uses: useblacksmith/checkout@v1
+        with:
+          repository: PrivateJAR/proto
+          ref: ${{ steps.pin.outputs.commit }}
+          ssh-key: ${{ secrets.PROTO_DEPLOY_KEY }}
+          path: .proto-src
+          persist-credentials: false
+
+      - name: Re-copy and compare
+        if: steps.pin.outputs.enabled == 'true'
+        run: |
+          scripts/sync-protos.sh .proto-src "${{ steps.pin.outputs.version }}"
+          rm -rf .proto-src
+          if ! git diff --exit-code -- src/main/proto .proto-version; then
+            echo "::error::src/main/proto does not match PrivateJAR/proto ${{ steps.pin.outputs.version }}; run scripts/sync-protos.sh"
+            exit 1
+          fi

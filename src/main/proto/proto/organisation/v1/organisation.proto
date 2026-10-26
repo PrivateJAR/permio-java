@@ -1,0 +1,377 @@
+syntax = "proto3";
+package permio.organisation.v1;
+
+option go_package = "github.com/PrivateJAR/permio-go/proto/organisation/v1;organisationv1";
+option java_package = "io.perms.proto.organisation.v1";
+option java_multiple_files = true;
+option java_outer_classname = "OrganisationProto";
+
+import "google/api/annotations.proto";
+import "validate/validate.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "proto/permissions/v1/permissions.proto";
+import "proto/pagination/v1/pagination.proto";
+
+
+service OrganisationService {
+    rpc CreateOrganisation(CreateOrganisationRequest) returns (CreateOrganisationResponse) {
+        option (google.api.http) = {
+            post: "/organisation-service/v1/organisation"
+            body: "*"
+        };
+    }
+    rpc GetOrganisation(GetOrganisationRequest) returns (GetOrganisationResponse) {
+        option (google.api.http) = {
+            get: "/organisation-service/v1/organisation/{id}"
+        };
+    }
+
+    // UpdateOrganisation updates the provided organisation.
+    // Required Permissions:
+    //   - organisation.update on /organisation/{organisation_id}
+    rpc UpdateOrganisation(UpdateOrganisationRequest) returns (UpdateOrganisationResponse) {
+        option (google.api.http) = {
+            put: "/organisation-service/v1/organisation/{id}"
+            body: "*"
+        };
+    }
+
+    // SetUsersOrganisation sets the provided users organisation.
+    // Required Permissions:
+    //   - user.organisation.set on /user/{user_id}
+    rpc SetUsersOrganisation(SetUsersOrganisationRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+            post: "/organisation-service/v1/organisation/{id}/user"
+            body: "*"
+        };
+    }
+    rpc InviteUserToOrganisation(InviteUserToOrganisationRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+            post: "/organisation-service/v1/organisation/{organisation_id}/invite"
+            body: "*"
+        };
+    }
+
+    // GetUsersOrganisation returns the organisation for the user.
+    // Required Permissions:
+    //   - user.organisation.get on /user/{user_id}
+    rpc GetUsersOrganisation(GetUsersOrganisationRequest) returns (GetOrganisationResponse) {
+        option (google.api.http) = {
+            get: "/organisation-service/v1/organisation/user"
+        };
+    }
+    rpc CreateAPIKey(CreateAPIKeyRequest) returns (CreateAPIKeyResponse) {
+        option (google.api.http) = {
+            post: "/organisation-service/v1/organisation/{organisation_id}/api-key"
+            body: "*"
+        };
+    }
+
+    // ListAPIKeys returns a list of apiKeys for an organisation.
+    // Required Permissions:
+    //   - apiKeys.list on /organisation/{organisation_id}
+    rpc ListAPIKeys(ListAPIKeysRequest) returns (ListAPIKeysResponse) {
+        option (google.api.http) = {
+            get: "/organisation-service/v1/organisation/{organisation_id}/api-key"
+        };
+    }
+    rpc InvalidateAPIKey(InvalidateAPIKeyRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+            delete: "/organisation-service/v1/organisation/{organisation_id}/api-key/{id}"
+        };
+    }
+
+    // CreateProject creates a new project for an organisation.
+    // Required Permissions:
+    //   - project.create on /organisation/{organisation_id}
+    rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse) {
+        option (google.api.http) = {
+            post: "/organisation-service/v1/organisation/{organisation_id}/project"
+            body: "*"
+        };
+    }
+    // GetProject returns the project given the organisation and project id.
+    // Required Permissions:
+    //   - project.get on /organisation/{organisation_id}/project/{project_name}
+    rpc GetProject(GetProjectRequest) returns (GetProjectResponse) {
+        option (google.api.http) = {
+            get: "/organisation-service/v1/organisation/{organisation_id}/project"
+        };
+    }
+
+    // GetProjectsForOrganisation returns the project given the organisation and project id.
+    // Required Permissions:
+    //   - project.get on /organisation/{organisation_id}
+    rpc GetProjectsForOrganisation(GetProjectsForOrganisationRequest) returns (GetProjectsForOrganisationResponse) {
+        option (google.api.http) = {
+            get: "/organisation-service/v1/organisation/{organisation_id}/projects"
+        };
+    }
+    // DeleteProject deletes the project for the organisation.
+    // Required Permissions:
+    //   - project.delete on /organisation/{organisation_id}/project/{project_name}
+    rpc DeleteProject(DeleteProjectRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+            delete: "/organisation-service/v1/organisation/{organisation_id}/project"
+        };
+    }
+
+    // GetPrincipalUsageStats returns usage statistics for an organisation's principals.
+    // Required Permissions:
+    //   - billing.view on /organisation/{organisation_id}
+    rpc GetPrincipalUsageStats(GetPrincipalUsageStatsRequest) returns (GetPrincipalUsageStatsResponse) {
+        option (google.api.http) = {
+            get: "/organisation-service/v1/organisation/{organisation_id}/principal-usage"
+        };
+    }
+
+    // GetUsageHistory returns historical usage data for charting.
+    // Required Permissions:
+    //   - billing.view on /organisation/{organisation_id}
+    rpc GetUsageHistory(GetUsageHistoryRequest) returns (GetUsageHistoryResponse) {
+        option (google.api.http) = {
+            get: "/organisation-service/v1/organisation/{organisation_id}/usage-history"
+        };
+    }
+
+    // GetOrganisationDashboard returns dashboard info for an organisation.
+    // Required Permissions:
+    //   - organisation.dashboard.view on /organisation/{organisation_id}
+    rpc GetOrganisationDashboard(GetOrganisationDashboardRequest) returns (GetOrganisationDashboardResponse) {
+        option (google.api.http) = {
+            get: "/organisation-service/v1/organisation/{organisation_id}/dashboard"
+        };
+    }
+
+    // RemoveUserFromOrganisation removes a user from an organisation.
+    // Required Permissions:
+    //   - organisation.user.remove on /organisation/{organisation_id}
+    rpc RemoveUserFromOrganisation(RemoveUserFromOrganisationRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+            post: "/organisation-service/v1/organisation/{organisation_id}/user/{user_id}"
+            body: "*"
+        };
+    }
+}
+
+message RemoveUserFromOrganisationRequest {
+    string organisation_id = 1 [(validate.rules).string = { min_len: 1 }];
+    string user_id = 2 [ (validate.rules).string = { min_len: 1 } ];
+}
+
+// Request for getting organisation dashboard info
+message GetOrganisationDashboardRequest {
+    string organisation_id = 1 [(validate.rules).string = { min_len: 1 }];
+    // project scopes the role, permission and principal totals to one project. Empty means the whole organisation.
+    // total_users is always organisation-wide.
+    string project = 2;
+}
+
+// Response for organisation dashboard info
+message GetOrganisationDashboardResponse {
+    int32 total_roles = 1;
+    int32 total_permissions = 2;
+    int32 total_principals = 3;
+    int32 total_users = 4;
+}
+
+// Request for getting principal usage stats
+message GetPrincipalUsageStatsRequest {
+    string organisation_id = 1 [(validate.rules).string = { min_len: 1 }];
+}
+
+// Response for principal usage stats
+message GetPrincipalUsageStatsResponse {
+    int32 current_count = 1;
+    int32 included_count = 2;
+    int32 usage_percentage = 3;
+    int32 overage = 4;
+    double overage_rate = 5;
+    double estimated_overage_cost = 6;
+    string current_billing_period = 7;
+    int32 days_left_in_billing_period = 8;
+}
+
+// Request for getting usage history
+message GetUsageHistoryRequest {
+    string organisation_id = 1 [(validate.rules).string = { min_len: 1 }];
+    // Optional days to look back, defaults to 30
+    int32 days = 2;
+}
+
+// Response for usage history
+message GetUsageHistoryResponse {
+    message UsageDataPoint {
+        string date = 1;
+        int32 count = 2;
+    }
+
+    repeated UsageDataPoint history = 1;
+}
+
+message Project {
+    string organisation_id = 1;
+    string name = 2;
+    google.protobuf.Timestamp created_at = 3;
+}
+message CreateProjectResponse {
+    Project project = 1;
+}
+message CreateProjectRequest {
+    // organisation_id is the id of the organisation
+    string organisation_id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    // name is the name of the new project
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+}
+message GetProjectRequest {
+    string organisation_id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    string project_name = 2 [ (validate.rules).string = { min_len: 1 } ];
+}
+
+message GetProjectsForOrganisationRequest {
+    string organisation_id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    optional pagination.PaginationRequest pagination = 2;
+    optional string search = 3;
+}
+
+message GetProjectsForOrganisationResponse {
+    repeated Project projects = 1;
+    pagination.PaginationResponse pagination = 2;
+}
+message GetProjectResponse {
+    Project project = 1;
+}
+message DeleteProjectRequest {
+    string organisation_id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    string project_name = 2 [ (validate.rules).string = { min_len: 1 } ];
+}
+
+message User {
+    string id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    string email = 2 [ (validate.rules).string = { min_len: 1 } ];
+}
+
+message Organisation {
+    string id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    string name = 2 [ (validate.rules).string = { min_len: 1 } ];
+    repeated User users = 3;
+    google.protobuf.Timestamp created_at = 4;
+    google.protobuf.Timestamp updated_at = 5;
+    BillingCustomer billing_customer = 6;
+}
+message BillingCustomer {
+    string id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    string organisation_id = 2 [ (validate.rules).string = { min_len: 1 } ];
+    string name = 3 [ (validate.rules).string = { min_len: 1 } ];
+    string email = 4 [ (validate.rules).string = { min_len: 1 } ];
+}
+message CreateOrganisationRequest {
+    string name = 1 [ (validate.rules).string = { min_len: 1 } ];
+    // user_id is the user that created the organisation and will be added as an admin
+    string user_id = 2 [ (validate.rules).string = { min_len: 1 } ];
+}
+message CreateOrganisationResponse {
+    Organisation organisation = 1;
+}
+message GetOrganisationRequest {
+    string id = 1 [ (validate.rules).string = { min_len: 1 } ];
+}
+message GetOrganisationResponse {
+    Organisation organisation = 1;
+}
+message UpdateOrganisationRequest {
+    string id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    string name = 2 [ (validate.rules).string = { min_len: 1 } ];
+}
+message UpdateOrganisationResponse {
+    Organisation organisation = 1;
+}
+message     SetUsersOrganisationRequest {
+    string id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    string user_id = 2 [ (validate.rules).string = { min_len: 1 } ];
+    string email = 3 [ (validate.rules).string.email = true];
+}
+message InviteUserToOrganisationRequest {
+    string organisation_id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    string email = 2 [ (validate.rules).string.email = true];
+}
+message GetUsersOrganisationRequest {
+    string user_id = 1 [ (validate.rules).string = { min_len: 1 } ];
+}
+message CreateAPIKeyRequest {
+    string organisation_id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    // project_name is the name of the project that the api key should be created in
+    string project_name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    string name = 3 [ (validate.rules).string = { min_len: 1 } ];
+    // access is the level of access the new key gets on its project.
+    // Unspecified is treated as API_KEY_ACCESS_CHECK. The caller must hold
+    // every permission the chosen level grants.
+    APIKeyAccess access = 4 [ (validate.rules).enum = { defined_only: true } ];
+}
+// APIKeyAccess is the level of access an API key has on its project.
+enum APIKeyAccess {
+    // API_KEY_ACCESS_UNSPECIFIED is treated as API_KEY_ACCESS_CHECK.
+    API_KEY_ACCESS_UNSPECIFIED = 0;
+    // API_KEY_ACCESS_CHECK can run permission checks and read permissions,
+    // roles and principals (role apikey.checker).
+    API_KEY_ACCESS_CHECK = 1;
+    // API_KEY_ACCESS_FULL can also create, update and delete permissions and
+    // roles, and assign and revoke grants (role apikey.manager).
+    API_KEY_ACCESS_FULL = 2;
+}
+message APIKey{
+    string id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    string name = 2 [ (validate.rules).string = { min_len: 1 } ];
+    string key = 3 [ (validate.rules).string = { min_len: 1 } ];
+    google.protobuf.Timestamp created_at = 4;
+    bool invalidated = 5;
+    // access is the level of access the key has on its project. Unspecified
+    // for keys whose level is not known.
+    APIKeyAccess access = 6;
+}
+message CreateAPIKeyResponse {
+    APIKey api_key = 1;
+}
+message ListAPIKeysRequest {
+    string organisation_id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    // project_name is the name of the project to list the api keys for
+    string project_name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    optional pagination.PaginationRequest pagination = 3;
+    // search is a search string to filter the API Keys by name.
+    optional string search = 4;
+}
+message ListAPIKeysResponse {
+    repeated APIKey api_keys = 1;
+    pagination.PaginationResponse pagination = 2;
+}
+message InvalidateAPIKeyRequest {
+    string organisation_id = 1 [ (validate.rules).string = { min_len: 1 } ];
+    // project_name is the name of the project that the api key belongs to
+    string project_name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    string id = 3 [ (validate.rules).string = { min_len: 1 } ];
+}

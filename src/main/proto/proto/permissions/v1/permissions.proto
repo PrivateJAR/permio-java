@@ -1,0 +1,1359 @@
+syntax = "proto3";
+package permio.permissions.v1;
+
+option go_package = "github.com/PrivateJAR/permio-go/proto/permissions/v1;permissionsv1";
+option java_package = "io.perms.proto.permissions.v1";
+option java_multiple_files = true;
+option java_outer_classname = "PermissionsProto";
+
+import "google/api/annotations.proto";
+import "validate/validate.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "proto/pagination/v1/pagination.proto";
+
+
+service PermissionsService {
+    // CreatePermission creates a permission in a project. Permission names are unique within a project; projects share
+    // nothing, so the same name can exist in several projects.
+    //
+    // It is idempotent by name. If the project already has a permission with this name, no new permission is created:
+    // the existing one is returned. If the request has a non-empty description that differs, the description is first
+    // set to it; an empty description leaves the existing one unchanged (use UpdatePermission to clear it). Changing
+    // an existing permission this way needs the same access as UpdatePermission; returning it unchanged needs the
+    // access of GetPermission. The caller who actually creates a permission can manage that permission from then on.
+    // Access: an API key of the project with full access; in the dashboard, organisation admins.
+    rpc CreatePermission(CreatePermissionRequest) returns (Permission) {
+        option (google.api.http) = {
+            post: "/permissions-service/v1/permissions"
+            body: "*"
+        };
+    }
+    // GetPermission returns a permission by name. It returns NOT_FOUND if the project has no permission with this name.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc GetPermission(GetPermissionRequest) returns (Permission) {
+        option (google.api.http) = {
+            get: "/permissions-service/v1/permissions/{name}"
+        };
+    }
+    // UpdatePermission replaces a permission's description and, if new_name is set, renames it. The description is
+    // always replaced: omitting it clears it. A rename is applied to every role and grant in the project that has the
+    // permission, so nobody gains or loses access by it. It returns NOT_FOUND if the permission does not exist and
+    // ALREADY_EXISTS if new_name is already taken in the project.
+    // Access: an API key of the project with full access; in the dashboard, organisation admins and the user who
+    // created the permission.
+    rpc UpdatePermission(UpdatePermissionRequest) returns (Permission) {
+        option (google.api.http) = {
+            put: "/permissions-service/v1/permissions/{name}"
+            body: "*"
+        };
+    }
+    // DeletePermission deletes a permission and removes it from every role and grant in the project; a grant left with
+    // no permissions and no roles is deleted. It is idempotent: it returns OK whether the permission existed or not.
+    // Access: an API key of the project with full access; in the dashboard, organisation admins and the user who
+    // created the permission.
+    rpc DeletePermission(DeletePermissionRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+            delete: "/permissions-service/v1/permissions/{name}"
+        };
+    }
+    // ListPermissions returns a page of the project's permissions, optionally filtered by name.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc ListPermissions(ListPermissionsRequest) returns (ListPermissionsResponse) {
+        option (google.api.http) = {
+            get: "/permissions-service/v1/permissions"
+        };
+    }
+    // CreateRole creates a role: a named set of permissions of the same project. Role names are unique within a
+    // project. Every permission in the request must exist in the project, or INVALID_ARGUMENT is returned.
+    //
+    // It is idempotent by name. If the project already has a role with this name, no new role is created: the existing
+    // one is returned. A non-empty description that differs replaces the existing one, and a non-empty list of
+    // permissions that differs (the order does not matter) replaces the existing permissions. An empty description or
+    // an empty list of permissions leaves that field unchanged; use UpdateRole to clear it. Changing an existing role
+    // this way needs the same access as UpdateRole; returning it unchanged needs the access of GetRole. The caller who
+    // actually creates a role can manage that role from then on.
+    // Access: an API key of the project with full access; in the dashboard, organisation admins.
+    rpc CreateRole(CreateRoleRequest) returns (Role) {
+        option (google.api.http) = {
+            post: "/permissions-service/v1/roles"
+            body: "*"
+        };
+    }
+    // GetRole returns a role by ID. It returns NOT_FOUND if the project has no role with this ID.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc GetRole(GetRoleRequest) returns (Role) {
+        option (google.api.http) = {
+            get: "/permissions-service/v1/roles/{id}"
+        };
+    }
+    // UpdateRole replaces a role's name, description and permissions with the request's. Every field is replaced:
+    // omitting description clears it and omitting permissions leaves the role with no permissions. Every permission in
+    // the request must exist in the project, or INVALID_ARGUMENT is returned. It returns NOT_FOUND if the role does not
+    // exist and ALREADY_EXISTS if another role in the project has the name.
+    // Access: an API key of the project with full access; in the dashboard, organisation admins and the user who
+    // created the role.
+    rpc UpdateRole(UpdateRoleRequest) returns (Role) {
+        option (google.api.http) = {
+            put: "/permissions-service/v1/roles/{id}"
+            body: "*"
+        };
+    }
+    // DeleteRole deletes a role and removes it from every grant in the project; a grant left with no permissions and no
+    // roles is deleted. It is idempotent: it returns OK whether the role existed or not.
+    // Access: an API key of the project with full access; in the dashboard, organisation admins and the user who
+    // created the role.
+    rpc DeleteRole(DeleteRoleRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+            delete: "/permissions-service/v1/roles/{id}"
+        };
+    }
+    // ListRoles returns a page of the project's roles, with their permissions, optionally filtered by name.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc ListRoles(ListRolesRequest) returns (ListRolesResponse) {
+        option (google.api.http) = {
+            get: "/permissions-service/v1/roles"
+        };
+    }
+    // GrantUserPermissionsAndRolesOnResource grants permissions and roles to a principal on a resource URI. It is
+    // additive: what the principal already holds there is kept. The grant applies to the resource and every resource
+    // below it (see Check). user_id may be any principal ID, including "group:<slug>" to grant to a group (the group
+    // must exist). Every permission and role must exist in the project, or INVALID_ARGUMENT is returned. A principal
+    // that is new to the organisation counts towards its unique principals (billing).
+    // Access: an API key of the project with full access; in the dashboard, organisation admins.
+    rpc GrantUserPermissionsAndRolesOnResource(GrantUserPermissionsAndRolesOnResourceRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+            post: "/permissions-service/v1/permissions/assign"
+            body: "*"
+        };
+    }
+    // RevokeUserPermissionsAndRolesOnResource removes permissions and roles from a principal's grant on exactly
+    // resource_uri. It does not touch grants on other URIs: a grant on an ancestor of resource_uri (or a "_" wildcard
+    // URI that matches it) still applies, so the principal may still pass Check on resource_uri afterwards. Names that
+    // the grant does not hold, including names of permissions or roles that no longer exist, are ignored; empty lists
+    // change nothing. A grant left with no permissions and no roles is deleted, and a principal left with no grant or
+    // group membership in the organisation stops counting towards its unique principals.
+    // Access: an API key of the project with full access; in the dashboard, organisation admins.
+    rpc RevokeUserPermissionsAndRolesOnResource(RevokeUserPermissionsAndRolesOnResourceRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+            post: "/permissions-service/v1/permissions/revoke"
+            body: "*"
+        };
+    }
+    // GetUserPermissionsAndRolesOnResource returns the permissions and roles granted to a principal on exactly
+    // resource_uri. Grants on ancestors or "_" wildcard URIs, and grants through groups, are not included: use Check or
+    // ListPrincipalsWithAccess for effective access. user_id may be any principal ID, including "group:<slug>".
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc GetUserPermissionsAndRolesOnResource(GetUserPermissionsAndRolesOnResourceRequest) returns (GetUserPermissionsAndRolesOnResourceResponse) {
+        option (google.api.http) = {
+            // resource_uri contains slashes, so it must be a multi-segment variable.
+            // Clients should send it without its leading slash (or use the query
+            // parameter binding below, which preserves the value exactly).
+            get: "/permissions-service/v1/permissions/user/{user_id}/resource/{resource_uri=**}"
+            additional_bindings {
+                get: "/permissions-service/v1/permissions/user/{user_id}/resource"
+            }
+        };
+    }
+    // ListPrincipals returns a page of the principal IDs that hold at least one grant in the project, ordered by ID.
+    // Groups that hold grants are listed as "group:<slug>"; members who only hold access through a group are not.
+    // search filters by principal ID (a case-insensitive substring match): principals have no names.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc ListPrincipals(ListPrincipalsRequest) returns (ListPrincipalsResponse) {
+        option (google.api.http) = {
+            get: "/permissions-service/v1/permissions/principals"
+        };
+    }
+    // GetAllAssignmentsForPrincipal returns a page of a principal's grants in the project: one assignment per resource
+    // URI, with the permissions and roles granted there. Grants through groups are not included.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc GetAllAssignmentsForPrincipal(GetAllAssignmentsForPrincipalRequest) returns (GetAllAssignmentsForPrincipalResponse) {
+        option (google.api.http) = {
+            // principal IDs are caller-defined and may contain slashes.
+            get: "/permissions-service/v1/permissions/assignments/principal/{principal_id=**}"
+        };
+    }
+    // Check checks whether a principal holds every one of the given permissions on every one of the given resources.
+    // A denial is not an error: the call succeeds with passed=false, and missing_permissions lists, per resource, the
+    // permissions the principal lacks. An error means the check could not be made (invalid request, caller not
+    // authorised, service unavailable); never treat an error as allowed.
+    //
+    // How grants apply:
+    //   - A grant on a resource URI applies to that resource and every resource below it: a grant on /docs applies to
+    //     /docs, /docs/1 and /docs/1/comments, but not to /docs-archive or /.
+    //   - A "_" segment in a granted URI matches exactly one segment: a grant on /docs/_/comments applies to
+    //     /docs/1/comments and /docs/2/comments/9, but not to /docs/1 or /docs/1/x/comments. In the URIs being checked
+    //     "_" is an ordinary segment, which only grants on "_" match.
+    //   - Grants to a group ("group:<slug>") apply to its members. A permission counts directly or through a role, and
+    //     only while it exists in the project.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and
+    // admins. The caller must be allowed to check both the resources and the principal.
+    rpc Check(CheckPermissionRequest) returns (CheckPermissionResponse) {
+        option (google.api.http) = {
+            post: "/permissions-service/v1/permissions/check"
+            body: "*"
+        };
+    }
+
+    // GetTotalRolesAndPermissionsForOrganisation returns the number of roles and permissions across all projects of an
+    // organisation.
+    // Access: dashboard users of the organisation (members and admins). API keys cannot call it.
+    rpc GetTotalRolesAndPermissionsForOrganisation(GetTotalRolesAndPermissionsForOrganisationRequest) returns (GetTotalRolesAndPermissionsForOrganisationResponse) {
+        option (google.api.http) = {
+            get: "/permissions-service/v1/permissions/organisation/{organisation_id}/totals"
+        };
+    }
+
+    // BatchCheck checks whether a principal has the specified permissions on each of the specified resources and
+    // returns one result per resource, in request order. It evaluates exactly like Check (same resource URI inheritance,
+    // stored "_" wildcard and group rules, same fail-closed behaviour); a resource's result is allowed only if the
+    // principal has every requested permission on it. A denial is a result with allowed=false, not an error.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc BatchCheck(BatchCheckRequest) returns (BatchCheckResponse) {
+        option (google.api.http) = {
+            post: "/permissions-service/v1/permissions/check/batch"
+            body: "*"
+        };
+    }
+
+    // ListAccess answers "where, at or below under_uri, does this principal hold this permission?". It returns the scopes in which
+    // Check(principal_id, permission) passes for resources at or below under_uri, counting grants made to the principal
+    // directly, through roles, and through the groups the principal is a member of.
+    //   - If the principal holds the permission on under_uri itself (through a grant on under_uri, an ancestor, or a
+    //     stored "_" wildcard URI that matches it), covers_all is true and scopes is a single SUBTREE scope for
+    //     under_uri.
+    //   - Otherwise scopes lists the URIs of the grants below under_uri that confer the permission: SUBTREE for a
+    //     concrete URI (grants apply to the URI and everything below it) and PATTERN for a URI with "_" wildcard
+    //     segments. Scopes are ordered by uri and paginated.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc ListAccess(ListAccessRequest) returns (ListAccessResponse) {
+        option (google.api.http) = {
+            get: "/permissions-service/v1/access"
+        };
+    }
+
+    // ListPrincipalsWithAccess answers "who has access to resource_uri?". It lists the principals holding a grant on
+    // resource_uri, on an ancestor of it, or on a stored "_" wildcard URI that matches it; when permission is set, only
+    // grants that confer that permission count, so a principal is listed if and only if Check(principal, resource_uri,
+    // permission) passes through its own grants. Groups are listed as principals (is_group); with expand_groups their
+    // members are listed too, once per group, with via_group set. Entries are ordered by principal_id, then via_group,
+    // and paginated.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc ListPrincipalsWithAccess(ListPrincipalsWithAccessRequest) returns (ListPrincipalsWithAccessResponse) {
+        option (google.api.http) = {
+            get: "/permissions-service/v1/access/principals"
+        };
+    }
+
+    // CreateGroup creates a group in a project. A group is a set of principals: grant permissions and roles to it with
+    // GrantUserPermissionsAndRolesOnResource using the principal ID "group:{name}" and every member holds them. Groups
+    // cannot contain groups. It returns ALREADY_EXISTS if the project already has a group with this name.
+    // Access: an API key of the project with full access; in the dashboard, organisation admins.
+    rpc CreateGroup(CreateGroupRequest) returns (Group) {
+        option (google.api.http) = {
+            post: "/permissions-service/v1/groups"
+            body: "*"
+        };
+    }
+    // GetGroup returns a group by name. It returns NOT_FOUND if the project has no group with this name.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc GetGroup(GetGroupRequest) returns (Group) {
+        option (google.api.http) = {
+            get: "/permissions-service/v1/groups/{name}"
+        };
+    }
+    // UpdateGroup updates a group's description. A group's name cannot be changed, because "group:{name}" is the
+    // principal ID its grants are stored under. It returns NOT_FOUND if the group does not exist.
+    // Access: an API key of the project with full access; in the dashboard, organisation admins.
+    rpc UpdateGroup(UpdateGroupRequest) returns (Group) {
+        option (google.api.http) = {
+            put: "/permissions-service/v1/groups/{name}"
+            body: "*"
+        };
+    }
+    // DeleteGroup deletes a group together with its memberships and every grant made to it, in one transaction. It is
+    // idempotent and returns ok whether the group existed or not.
+    // Access: an API key of the project with full access; in the dashboard, organisation admins.
+    rpc DeleteGroup(DeleteGroupRequest) returns (google.protobuf.Empty) {
+        option (google.api.http) = {
+            delete: "/permissions-service/v1/groups/{name}"
+        };
+    }
+    // ListGroups returns the groups in a project, ordered by name.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse) {
+        option (google.api.http) = {
+            get: "/permissions-service/v1/groups"
+        };
+    }
+    // AddGroupMembers adds up to 100 principals to a group. Principals that are already members are reported, not
+    // re-added. Principal IDs starting with "group:" are rejected (groups cannot be nested). A principal that is new to
+    // the organisation counts towards its unique principals, exactly as if it had been granted something. Because a
+    // member holds every grant of the group, the caller must also be allowed to grant in the whole project.
+    // Access: an API key of the project with full access; in the dashboard, organisation admins.
+    rpc AddGroupMembers(AddGroupMembersRequest) returns (AddGroupMembersResponse) {
+        option (google.api.http) = {
+            post: "/permissions-service/v1/groups/{name}/members/add"
+            body: "*"
+        };
+    }
+    // RemoveGroupMembers removes up to 100 principals from a group. Principals that are not members are reported. Because
+    // a removed member loses every grant of the group, the caller must also be allowed to revoke in the whole project.
+    // Access: an API key of the project with full access; in the dashboard, organisation admins.
+    rpc RemoveGroupMembers(RemoveGroupMembersRequest) returns (RemoveGroupMembersResponse) {
+        option (google.api.http) = {
+            post: "/permissions-service/v1/groups/{name}/members/remove"
+            body: "*"
+        };
+    }
+    // ListGroupMembers returns a group's members, ordered by principal ID.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc ListGroupMembers(ListGroupMembersRequest) returns (ListGroupMembersResponse) {
+        option (google.api.http) = {
+            get: "/permissions-service/v1/groups/{name}/members"
+        };
+    }
+    // ListGroupsForPrincipal returns the groups a principal is a member of in a project, ordered by name.
+    // Access: any API key of the project (check-only or full access); in the dashboard, organisation members and admins.
+    rpc ListGroupsForPrincipal(ListGroupsForPrincipalRequest) returns (ListGroupsForPrincipalResponse) {
+        option (google.api.http) = {
+            // principal IDs are caller-defined and may contain slashes.
+            get: "/permissions-service/v1/group-memberships/{principal_id=**}"
+        };
+    }
+
+    // WhoAmI describes the caller: its principal ID, organisation and kind, and for an API key the project it belongs
+    // to and its access level. Use it to find out which project an API key is for before making project-scoped calls.
+    // It needs no permission: any valid credential may call it, and it only describes that credential. A user's
+    // organisation comes from their dashboard sign-in and is empty if they have not joined one yet.
+    rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse) {
+        option (google.api.http) = {
+            get: "/permissions-service/v1/whoami"
+        };
+    }
+}
+
+// GetTotalRolesAndPermissionsForOrganisationRequest is the request of GetTotalRolesAndPermissionsForOrganisation.
+message GetTotalRolesAndPermissionsForOrganisationRequest {
+    // organisation_id is the organisation to count in. It must be the caller's organisation.
+    string organisation_id = 1 [(validate.rules).string = { min_len: 1 }];
+    // project limits the totals to one project. Empty counts across all of the organisation's projects.
+    string project = 2;
+}
+
+// GetTotalRolesAndPermissionsForOrganisationResponse holds the organisation's totals, across all its projects or for
+// the requested project.
+message GetTotalRolesAndPermissionsForOrganisationResponse {
+    // total_roles is the number of roles.
+    int32 total_roles = 1;
+    // total_permissions is the number of permissions.
+    int32 total_permissions = 2;
+    // total_principals is the number of distinct principals with a grant (excluding group principals) or a group
+    // membership. It is only set when project is set; the organisation-wide count is the billed one.
+    int32 total_principals = 3;
+}
+
+// ListRolesRequest is the request of ListRoles.
+message ListRolesRequest {
+    // project_name is the name of the project that the roles belong to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    optional pagination.PaginationRequest pagination = 3;
+    // search, when set, only returns roles whose name contains it (case-insensitive).
+    optional string search = 4;
+}
+
+// ListPermissionsRequest is the request of ListPermissions.
+message ListPermissionsRequest {
+    // project_name is the name of the project that the permissions belong to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    optional pagination.PaginationRequest pagination = 2;
+    // search, when set, only returns permissions whose name contains it (case-insensitive).
+    optional string search = 3;
+}
+
+// ListPrincipalsRequest is the request of ListPrincipals.
+message ListPrincipalsRequest {
+    // project_name is the name of the project whose principals (those holding grants in it) are listed.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    optional pagination.PaginationRequest pagination = 2;
+    // search, when set, only returns principals whose ID contains it (case-insensitive). Principals have no names.
+    optional string search = 3;
+}
+
+// CheckPermissionRequest is the request of Check.
+message CheckPermissionRequest {
+    // project_name is the name of the project to check permissions in.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // principal_id is the principal to check: a user ID, any other caller-defined principal ID, or "group:<slug>".
+    string principal_id = 2 [(validate.rules).string = {min_len: 1}];
+    // resource_uris are the URIs of the resources to check (1 to 100, no duplicates). Each must start with "/" and have
+    // no empty segments; segments may not contain the characters ( ) [ ] { } * + ? | ^ $ \.
+    repeated string resource_uris = 3 [(validate.rules).repeated = {
+        unique: true
+        min_items: 1
+        max_items: 100
+        items: {
+            string: {
+                // Must start with "/". Path segments may not contain regex metacharacters ( ) [ ] { } * + ? | ^ $ \\
+                pattern: "^/([^/()\\[\\]{}*+?|^$\\\\]+/)*[^/()\\[\\]{}*+?|^$\\\\]+$"
+                uri_ref: true
+            }
+        }
+    }];
+    // permissions are the names of the permissions the principal must hold on every resource (1 to 100, no
+    // duplicates). A name that does not exist in the project is always missing.
+    repeated string permissions = 4 [(validate.rules).repeated = {
+        unique: true
+        min_items: 1
+        max_items: 100
+        items: {
+            string: {
+                min_len: 1
+            }
+        }
+    }];
+}
+
+// MissingPermissions lists the requested permissions a principal does not hold on one resource.
+message MissingPermissions {
+    // resource_uri is the checked resource URI, exactly as in the request.
+    string resource_uri = 1;
+    // missing_permissions are the requested permissions the principal lacks on resource_uri.
+    repeated string missing_permissions = 2;
+}
+
+// CheckPermissionResponse is the result of Check.
+message CheckPermissionResponse {
+    // passed is true if the principal has all of the specified permissions on all of the specified resources. A denial
+    // is passed=false, never an error.
+    bool passed = 1;
+    // missing_permissions lists, for each resource where something is missing, the permissions the principal lacks.
+    // It is empty when passed is true.
+    repeated MissingPermissions missing_permissions = 2;
+}
+
+// ListPrincipalsResponse is the response to the ListPrincipals request.
+message ListPrincipalsResponse {
+    // principals are principal IDs, in ascending order.
+    repeated string principals = 1;
+    pagination.PaginationResponse pagination = 2;
+}
+
+// GetAllAssignmentsForPrincipalRequest is the request to get all assignments for a principal.
+message GetAllAssignmentsForPrincipalRequest {
+    // project_name is the name of the project that principal belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // PrincipalID is the unique identifier of the principal.
+    string principal_id = 2 [(validate.rules).string = {min_len: 1}];
+    optional pagination.PaginationRequest pagination = 3;
+}
+
+// GetAllAssignmentsForPrincipalResponse is the response to the GetAllAssignmentsForPrincipal request.
+message GetAllAssignmentsForPrincipalResponse {
+    // Assignments is a list of assignments for the principal.
+    repeated Assignment assignments = 1;
+    pagination.PaginationResponse pagination = 2;
+}
+
+// an InheritedRole is a role that a principal has inherited.
+message InheritedRole {
+    Role role = 1;
+    string inherited_from = 2;
+}
+
+// an InheritedPermission is a permission that a principal has inherited from a role.
+message InheritedPermission {
+    Permission permission = 1;
+    string inherited_from = 2;
+}
+
+// an Assignment is a set of permissions and roles assigned to a principal on a resource.
+message Assignment {
+    // ResourceURI is the URI of the resource to which the principal is assigned permissions.
+    string resource_uri = 2 [(validate.rules).string = {
+        // Path segments may not contain regex metacharacters ( ) [ ] { } * + ? | ^ $ \\
+        pattern: "^(/([^/()\\[\\]{}*+?|^$\\\\]+/)*[^/()\\[\\]{}*+?|^$\\\\]+)?$",
+        uri_ref: true
+    }];
+    // Permissions is a list of permissions that the principal has.
+    repeated Permission permissions = 3;
+    // Roles is a list of roles that the principal has.
+    repeated Role roles = 4;
+}
+
+// GetUserPermissionsAndRolesOnResourceResponse is what is granted to a principal on exactly one resource URI.
+message GetUserPermissionsAndRolesOnResourceResponse {
+    // project_name is the project of the grant.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // user_id is the principal ID (any principal, including "group:<slug>"). The field is named user_id for
+    // historical reasons.
+    string user_id = 2 [(validate.rules).string = {min_len: 1}];
+    // resource_uri is the resource URI the grant is on.
+    string resource_uri = 3 [(validate.rules).string = {
+        // Path segments may not contain regex metacharacters ( ) [ ] { } * + ? | ^ $ \\
+        pattern: "^(/([^/()\\[\\]{}*+?|^$\\\\]+/)*[^/()\\[\\]{}*+?|^$\\\\]+)?$",
+        uri_ref: true
+    }];
+    // permissions are the names of the permissions granted directly on resource_uri.
+    repeated string permissions = 4 [(validate.rules).repeated.items.string = {min_len: 1}];
+    // roles are the IDs of the roles granted on resource_uri.
+    repeated string roles = 5 [(validate.rules).repeated.items.string = {min_len: 1}];
+}
+
+// GetUserPermissionsAndRolesOnResourceRequest is the request of GetUserPermissionsAndRolesOnResource.
+message GetUserPermissionsAndRolesOnResourceRequest {
+    // project_name is the name of the project to look in.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // user_id is the principal to look up: a user ID, any other caller-defined principal ID, or "group:<slug>" for a
+    // group. The field is named user_id for historical reasons; it accepts any principal.
+    string user_id = 2 [(validate.rules).string = {min_len: 1}];
+    // resource_uri is the exact resource URI to look up (it should start with "/"; over HTTP the path binding may omit
+    // the leading "/"). Only grants made on exactly this URI are returned.
+    string resource_uri = 3 [(validate.rules).string = {
+        // Path segments may not contain regex metacharacters ( ) [ ] { } * + ? | ^ $ \\
+        pattern: "^(/([^/()\\[\\]{}*+?|^$\\\\]+/)*[^/()\\[\\]{}*+?|^$\\\\]+)?$",
+        uri_ref: true
+    }];
+}
+
+// GrantUserPermissionsAndRolesOnResourceRequest is the request of GrantUserPermissionsAndRolesOnResource.
+message GrantUserPermissionsAndRolesOnResourceRequest {
+    // project_name is the name of the project that the grant will belong to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // user_id is the principal to grant to: a user ID, any other caller-defined principal ID, or "group:<slug>" to grant
+    // to a group (the group must exist). The field is named user_id for historical reasons; it accepts any principal.
+    string user_id = 2 [(validate.rules).string = {min_len: 1}];
+    // resource_uri is the resource URI to grant on. It must start with "/" and have no empty segments; segments may not
+    // contain the characters ( ) [ ] { } * + ? | ^ $ \. A "_" segment matches any one segment (see Check).
+    string resource_uri = 3 [(validate.rules).string = {
+        // Path segments may not contain regex metacharacters ( ) [ ] { } * + ? | ^ $ \\
+        pattern: "^/([^/()\\[\\]{}*+?|^$\\\\]+/)*[^/()\\[\\]{}*+?|^$\\\\]+$",
+        uri_ref: true
+    }];
+    // permissions are the names of the permissions to grant. Each must exist in the project.
+    repeated string permissions = 4 [(validate.rules).repeated.items.string = {min_len: 1}];
+    // roles are the IDs of the roles to grant. Each must exist in the project.
+    repeated string roles = 5 [(validate.rules).repeated.items.string = {
+        min_len: 1, max_len: 128, pattern: "^[a-zA-Z0-9._-]+$"
+    }];
+}
+
+// CreatePermissionRequest is the request of CreatePermission.
+message CreatePermissionRequest {
+    // project_name is the name of the project that the permission will belong to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // Name is the name of the permission.
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 128,
+            pattern: "^[a-zA-Z0-9._-]+$"
+        }
+    ];
+    // description is the description of the permission. For an existing permission a non-empty description replaces
+    // the current one; an empty one leaves it unchanged.
+    string description = 3;
+}
+
+// a Permission identifies an action that can be performed on a resource.
+message Permission {
+    // ID is the unique identifier of the permission.
+    string id = 1;
+    // OrganisationID is the unique identifier of the organisation that owns the permission.
+    string organisation_id = 2;
+    // Name is the name of the permission.
+    string name = 3;
+    // Description is the description of the permission.
+    string description = 4;
+    // project_name is the name of the project that the permission belongs to.
+    string project_name = 5;
+}
+
+// GetPermissionRequest is the request of GetPermission.
+message GetPermissionRequest {
+    // project_name is the name of the project that the permission belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // name is the name of the permission.
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 128,
+            pattern: "^[a-zA-Z0-9._-]+$"
+        }
+    ];
+}
+
+// UpdatePermissionRequest is the request of UpdatePermission.
+message UpdatePermissionRequest {
+    // project_name is the name of the project that the permission belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // name is the current name of the permission to update.
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 128,
+            pattern: "^[a-zA-Z0-9._-]+$"
+        }
+    ];
+    // new_name, when set, renames the permission. Roles and grants that have the permission are updated to the new name.
+    // It returns ALREADY_EXISTS if the project already has a permission with this name.
+    optional string new_name = 3 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 128,
+            pattern: "^[a-zA-Z0-9._-]+$"
+        }
+    ];
+    // description replaces the permission's description. It is not optional: omitting it clears the description.
+    string description = 4;
+}
+
+// DeletePermissionRequest is the request of DeletePermission.
+message DeletePermissionRequest {
+    // project_name is the name of the project that the permission belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // name is the name of the permission.
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 128,
+            pattern: "^[a-zA-Z0-9._-]+$"
+        }
+    ];
+}
+
+// ListPermissionsResponse is a page of permissions.
+message ListPermissionsResponse {
+    repeated Permission permissions = 1;
+    pagination.PaginationResponse pagination = 2;
+}
+
+// CreateRoleRequest is the request of CreateRole.
+message CreateRoleRequest {
+    // project_name is the name of the project that the role belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // Name is the name of the role. Control characters are not allowed.
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 128,
+            pattern: "^[^\\x00-\\x1f\\x7f]+$"
+        }
+    ];
+    // description is the description of the role. For an existing role a non-empty description replaces the current
+    // one; an empty one leaves it unchanged.
+    string description = 3;
+    // permissions are the names of the role's permissions. Each must exist in the project. For an existing role a
+    // non-empty list replaces the current permissions; an empty list leaves them unchanged.
+    repeated string permissions = 4 [(validate.rules).repeated.items.string = {
+        min_len: 1, max_len: 128, pattern: "^[a-zA-Z0-9._-]+$"
+    }];
+}
+
+// a Role is a collection of permissions.
+message Role {
+    // ID is the unique identifier of the role.
+    string id = 1;
+    // OrganisationID is the unique identifier of the organisation that owns the role.
+    string organisation_id = 2;
+    // Name is the name of the role.
+    string name = 3;
+    // Description is the description of the role.
+    string description = 4;
+    // permissions are the permissions that the role contains.
+    repeated Permission permissions = 5;
+    // project_name is the name of the project that the role belongs to.
+    string project_name = 6;
+}
+
+// GetRoleRequest is the request of GetRole.
+message GetRoleRequest {
+    // project_name is the name of the project that the role belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // id is the unique identifier of the role.
+    string id = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 128,
+            pattern: "^[a-zA-Z0-9._-]+$"
+        }
+    ];
+}
+
+// UpdateRoleRequest is the request of UpdateRole. Every field replaces the role's current value.
+message UpdateRoleRequest {
+    // project_name is the name of the project that the role belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // id is the unique identifier of the role.
+    string id = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 128,
+            pattern: "^[a-zA-Z0-9._-]+$"
+        }
+    ];
+    // name is the role's name (required; send the current name to keep it). Control characters are not allowed. It
+    // returns ALREADY_EXISTS if another role in the project has this name.
+    string name = 3 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 128,
+            pattern: "^[^\\x00-\\x1f\\x7f]+$"
+        }
+    ];
+    // description replaces the role's description: omitting it clears the description.
+    string description = 4;
+    // permissions replace the role's permissions: omitting them leaves the role with no permissions. Each must exist in
+    // the project.
+    repeated string permissions = 5 [(validate.rules).repeated.items.string = {
+        min_len: 1, max_len: 128, pattern: "^[a-zA-Z0-9._-]+$"
+    }];
+}
+
+// DeleteRoleRequest is the request of DeleteRole.
+message DeleteRoleRequest {
+    // project_name is the name of the project that the role belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // id is the unique identifier of the role.
+    string id = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 128,
+            pattern: "^[a-zA-Z0-9._-]+$"
+        }
+    ];
+}
+
+// ListRolesResponse is a page of roles.
+message ListRolesResponse {
+    repeated Role roles = 1;
+    pagination.PaginationResponse pagination = 2;
+}
+
+// RevokeUserPermissionsAndRolesOnResourceRequest is the request of RevokeUserPermissionsAndRolesOnResource.
+message RevokeUserPermissionsAndRolesOnResourceRequest {
+    // project_name is the name of the project that the grant belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // user_id is the principal to revoke from: a user ID, any other caller-defined principal ID, or "group:<slug>". The
+    // field is named user_id for historical reasons; it accepts any principal.
+    string user_id = 2 [(validate.rules).string = {min_len: 1}];
+    // resource_uri is the exact resource URI of the grant to change. It should start with "/"; an empty value is
+    // accepted only so that grants stored on an empty URI by older versions can still be removed. Grants on other URIs
+    // (including ancestors of this one) are not changed.
+    string resource_uri = 3 [(validate.rules).string = {
+        // Path segments may not contain regex metacharacters ( ) [ ] { } * + ? | ^ $ \\
+        pattern: "^(/([^/()\\[\\]{}*+?|^$\\\\]+/)*[^/()\\[\\]{}*+?|^$\\\\]+)?$",
+        uri_ref: true
+    }];
+    // permissions are the names of the permissions to remove from the grant. Names the grant does not hold are ignored.
+    repeated string permissions = 4 [(validate.rules).repeated.items.string = {min_len: 1}];
+    // roles are the IDs of the roles to remove from the grant. IDs the grant does not hold are ignored.
+    repeated string roles = 5 [(validate.rules).repeated.items.string = {
+        min_len: 1, max_len: 128, pattern: "^[a-zA-Z0-9._-]+$"
+    }];
+}
+
+// PrincipalCountUpdatedEvent is an event that is published when the number of unique principals in an organisation is updated.
+message PrincipalCountUpdatedEvent {
+    // OrganisationID is the unique identifier of the organisation that the principal count was updated for.
+    string organisation_id = 1 [(validate.rules).string = {min_len: 1}];
+    // UniquePrincipalCount is the new number of unique principals in the organisation.
+    int64 unique_principal_count = 2;
+}
+// BatchCheckRequest is the request of BatchCheck.
+message BatchCheckRequest {
+    // project_name is the name of the project to check permissions in.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // principal_id is the unique identifier of the principal.
+    string principal_id = 2 [(validate.rules).string = {min_len: 1}];
+    // resource_uris are the URIs of the resources to check, with the same rules as CheckPermissionRequest.resource_uris.
+    repeated string resource_uris = 3 [(validate.rules).repeated = {
+        unique: true
+        min_items: 1
+        max_items: 100
+        items: {
+            string: {
+                // Must start with "/". Path segments may not contain regex metacharacters ( ) [ ] { } * + ? | ^ $ \\
+                pattern: "^/([^/()\\[\\]{}*+?|^$\\\\]+/)*[^/()\\[\\]{}*+?|^$\\\\]+$"
+                uri_ref: true
+            }
+        }
+    }];
+    // permissions are the permission names the principal should have on every resource.
+    repeated string permissions = 4 [(validate.rules).repeated = {
+        unique: true
+        min_items: 1
+        max_items: 100
+        items: {
+            string: {
+                min_len: 1
+            }
+        }
+    }];
+}
+
+// BatchCheckResponse is the result of BatchCheck.
+message BatchCheckResponse {
+    // results has one entry per requested resource URI, in request order.
+    repeated BatchCheckResult results = 1;
+}
+
+// BatchCheckResult is the result of checking one resource URI.
+message BatchCheckResult {
+    string resource_uri = 1;
+    // allowed is true if the principal has every requested permission on resource_uri.
+    bool allowed = 2;
+    // missing_permissions are the requested permissions the principal does not have on resource_uri, in request order.
+    repeated string missing_permissions = 3;
+}
+
+// ListAccessRequest is the request of ListAccess.
+message ListAccessRequest {
+    // project_name is the name of the project to look in.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // principal_id is the unique identifier of the principal.
+    string principal_id = 2 [(validate.rules).string = {min_len: 1}];
+    // permission is the name of the permission to look for.
+    string permission = 3 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 128,
+            pattern: "^[a-zA-Z0-9._-]+$"
+        }
+    ];
+    // under_uri limits the answer to under_uri and the resources below it. A "_" segment in under_uri is literal.
+    string under_uri = 4 [(validate.rules).string = {
+        min_len: 1,
+        // Path segments may not contain regex metacharacters ( ) [ ] { } * + ? | ^ $ \\
+        pattern: "^(/([^/()\\[\\]{}*+?|^$\\\\]+/)*[^/()\\[\\]{}*+?|^$\\\\]+)?$",
+        uri_ref: true
+    }];
+    optional pagination.PaginationRequest pagination = 5;
+}
+
+// ListAccessResponse is the result of ListAccess.
+message ListAccessResponse {
+    // covers_all is true if the principal holds the permission on under_uri itself and therefore on everything below
+    // it. scopes is then a single SUBTREE scope for under_uri and there are no further pages.
+    bool covers_all = 1;
+    // scopes are the places at or below under_uri where the principal holds the permission, ordered by uri.
+    repeated AccessScope scopes = 2;
+    pagination.PaginationResponse pagination = 3;
+}
+
+// AccessScope is a set of resources on which a principal holds a permission.
+message AccessScope {
+    // uri is the resource URI (SUBTREE, EXACT) or URI pattern (PATTERN) of the scope. For a grant below under_uri it is
+    // the URI the grant was made on, which may have "_" segments in the part that matches under_uri.
+    string uri = 1;
+    // scope says which resources uri stands for.
+    AccessScopeKind scope = 2;
+}
+
+enum AccessScopeKind {
+    ACCESS_SCOPE_KIND_UNSPECIFIED = 0;
+    // Exactly the resource uri. Grants are inherited by every resource below the granted one, so the current model
+    // never returns EXACT; it is reserved for non-inheritable grants.
+    ACCESS_SCOPE_KIND_EXACT = 1;
+    // The resource uri and every resource below it.
+    ACCESS_SCOPE_KIND_SUBTREE = 2;
+    // Every resource whose leading segments match uri, where each "_" segment of uri matches exactly one segment, and
+    // every resource below those.
+    ACCESS_SCOPE_KIND_PATTERN = 3;
+}
+
+// ListPrincipalsWithAccessRequest is the request of ListPrincipalsWithAccess.
+message ListPrincipalsWithAccessRequest {
+    // project_name is the name of the project to look in.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // resource_uri is the resource to look at. A "_" segment in resource_uri is literal.
+    string resource_uri = 2 [(validate.rules).string = {
+        min_len: 1,
+        // Path segments may not contain regex metacharacters ( ) [ ] { } * + ? | ^ $ \\
+        pattern: "^(/([^/()\\[\\]{}*+?|^$\\\\]+/)*[^/()\\[\\]{}*+?|^$\\\\]+)?$",
+        uri_ref: true
+    }];
+    // permission, when set, only counts grants that confer this permission. When unset every grant with at least one
+    // direct permission or role counts.
+    optional string permission = 3 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 128,
+            pattern: "^[a-zA-Z0-9._-]+$"
+        }
+    ];
+    // expand_groups also lists the members of every listed group, with via_group set.
+    bool expand_groups = 4;
+    optional pagination.PaginationRequest pagination = 5;
+}
+
+// ListPrincipalsWithAccessResponse is a page of principals with access.
+message ListPrincipalsWithAccessResponse {
+    repeated PrincipalAccess principals = 1;
+    pagination.PaginationResponse pagination = 2;
+}
+
+// PrincipalAccess is one principal with access to a resource, and the grants that give it.
+message PrincipalAccess {
+    string principal_id = 1;
+    // is_group is true if principal_id is a group ("group:{name}").
+    bool is_group = 2;
+    // via_group is the name of the group through which principal_id holds the grants in via, when the entry comes from
+    // expand_groups. It is empty for grants made to principal_id itself.
+    string via_group = 3;
+    // via are the grants that give the access, most specific first.
+    repeated AccessGrant via = 4;
+}
+
+// AccessGrant is one grant (or one role within a grant) that gives a principal access to a resource.
+message AccessGrant {
+    // resource_uri is the URI the grant was made on: the resource itself, an ancestor, or a URI with stored "_"
+    // wildcard segments that match it.
+    string resource_uri = 1;
+    // inherited is true if resource_uri is not exactly the resource, i.e. match is ANCESTOR or WILDCARD.
+    bool inherited = 2;
+    AccessGrantMatch match = 3;
+    // source is how the grant gives the access: through a role, or as directly granted permissions.
+    oneof source {
+        AccessGrantRole role = 4;
+        AccessGrantDirect direct = 5;
+    }
+}
+
+// AccessGrantRole identifies the role through which a grant gives access.
+message AccessGrantRole {
+    string id = 1;
+    string name = 2;
+}
+
+// AccessGrantDirect marks access given by directly granted permissions rather than a role.
+message AccessGrantDirect {}
+
+enum AccessGrantMatch {
+    ACCESS_GRANT_MATCH_UNSPECIFIED = 0;
+    // The grant was made on exactly the resource.
+    ACCESS_GRANT_MATCH_EXACT = 1;
+    // The grant was made on an ancestor of the resource (possibly with "_" wildcard segments).
+    ACCESS_GRANT_MATCH_ANCESTOR = 2;
+    // The grant was made at the same depth as the resource, but one or more of its segments is the "_" wildcard.
+    ACCESS_GRANT_MATCH_WILDCARD = 3;
+}
+
+// a Group is a named set of principals in a project. Grants made to the principal ID "group:{name}" apply to every
+// member. Groups count towards nothing in billing; their members count as unique principals.
+message Group {
+    // ID is the unique identifier of the group.
+    string id = 1;
+    // OrganisationID is the unique identifier of the organisation that owns the group.
+    string organisation_id = 2;
+    // project_name is the name of the project that the group belongs to.
+    string project_name = 3;
+    // name is the group's slug, unique within the project. It cannot be changed.
+    string name = 4;
+    // description is the description of the group.
+    string description = 5;
+    // principal_id is the principal ID that grants to this group are made to: "group:{name}".
+    string principal_id = 6;
+    google.protobuf.Timestamp created_at = 7;
+    google.protobuf.Timestamp updated_at = 8;
+}
+
+// CreateGroupRequest is the request of CreateGroup.
+message CreateGroupRequest {
+    // project_name is the name of the project that the group will belong to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // name is the group's slug: lower-case letters, digits and hyphens.
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 64,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // description is the description of the group.
+    string description = 3 [(validate.rules).string = {max_len: 1024}];
+}
+
+// GetGroupRequest is the request of GetGroup.
+message GetGroupRequest {
+    // project_name is the name of the project that the group belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // name is the group's slug.
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 64,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+}
+
+// UpdateGroupRequest is the request of UpdateGroup.
+message UpdateGroupRequest {
+    // project_name is the name of the project that the group belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // name is the group's slug.
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 64,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // description replaces the group's description.
+    string description = 3 [(validate.rules).string = {max_len: 1024}];
+}
+
+// DeleteGroupRequest is the request of DeleteGroup.
+message DeleteGroupRequest {
+    // project_name is the name of the project that the group belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // name is the group's slug.
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 64,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+}
+
+// ListGroupsRequest is the request of ListGroups.
+message ListGroupsRequest {
+    // project_name is the name of the project that the groups belong to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    optional pagination.PaginationRequest pagination = 2;
+    // search is a search string to filter the groups by name.
+    optional string search = 3 [(validate.rules).string = {max_len: 128}];
+}
+
+// ListGroupsResponse is a page of groups.
+message ListGroupsResponse {
+    repeated Group groups = 1;
+    pagination.PaginationResponse pagination = 2;
+}
+
+// AddGroupMembersRequest is the request of AddGroupMembers.
+message AddGroupMembersRequest {
+    // project_name is the name of the project that the group belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // name is the group's slug.
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 64,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // principal_ids are the principals to add. They may not start with "group:".
+    repeated string principal_ids = 3 [(validate.rules).repeated = {
+        unique: true
+        min_items: 1
+        max_items: 100
+        items: {
+            string: {
+                min_len: 1
+            }
+        }
+    }];
+}
+
+// AddGroupMembersResponse is the result of AddGroupMembers.
+message AddGroupMembersResponse {
+    // added_principal_ids are the principals that were added, in request order.
+    repeated string added_principal_ids = 1;
+    // existing_principal_ids are the principals that were already members, in request order.
+    repeated string existing_principal_ids = 2;
+}
+
+// RemoveGroupMembersRequest is the request of RemoveGroupMembers.
+message RemoveGroupMembersRequest {
+    // project_name is the name of the project that the group belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // name is the group's slug.
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 64,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // principal_ids are the principals to remove.
+    repeated string principal_ids = 3 [(validate.rules).repeated = {
+        unique: true
+        min_items: 1
+        max_items: 100
+        items: {
+            string: {
+                min_len: 1
+            }
+        }
+    }];
+}
+
+// RemoveGroupMembersResponse is the result of RemoveGroupMembers.
+message RemoveGroupMembersResponse {
+    // removed_principal_ids are the principals that were removed, in request order.
+    repeated string removed_principal_ids = 1;
+    // not_member_principal_ids are the principals that were not members, in request order.
+    repeated string not_member_principal_ids = 2;
+}
+
+// ListGroupMembersRequest is the request of ListGroupMembers.
+message ListGroupMembersRequest {
+    // project_name is the name of the project that the group belongs to.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // name is the group's slug.
+    string name = 2 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 64,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    optional pagination.PaginationRequest pagination = 3;
+}
+
+// GroupMember is one member of a group.
+message GroupMember {
+    string principal_id = 1;
+    // created_at is when the principal was added to the group.
+    google.protobuf.Timestamp created_at = 2;
+}
+
+// ListGroupMembersResponse is a page of group members.
+message ListGroupMembersResponse {
+    repeated GroupMember members = 1;
+    pagination.PaginationResponse pagination = 2;
+}
+
+// ListGroupsForPrincipalRequest is the request of ListGroupsForPrincipal.
+message ListGroupsForPrincipalRequest {
+    // project_name is the name of the project to look in.
+    string project_name = 1 [
+        (validate.rules).string = {
+            min_len: 1,
+            max_len: 32,
+            pattern: "^[a-z0-9-]+$"
+        }
+    ];
+    // principal_id is the unique identifier of the principal.
+    string principal_id = 2 [(validate.rules).string = {min_len: 1}];
+    optional pagination.PaginationRequest pagination = 3;
+}
+
+// ListGroupsForPrincipalResponse is a page of the groups a principal is a member of.
+message ListGroupsForPrincipalResponse {
+    repeated Group groups = 1;
+    pagination.PaginationResponse pagination = 2;
+}
+
+// WhoAmIRequest is the request of WhoAmI. It has no fields: WhoAmI describes the caller's own credential.
+message WhoAmIRequest {}
+
+// WhoAmIResponse describes the caller.
+message WhoAmIResponse {
+    // principal_id is the caller's principal ID: the user's ID, the API key's ID, or the service account's ID.
+    string principal_id = 1;
+    // organisation_id is the caller's organisation. It is empty for a user who has not joined an organisation yet.
+    string organisation_id = 2;
+    // principal_type says what kind of credential the caller used.
+    PrincipalType principal_type = 3;
+    // project_name is the project an API key belongs to; an API key can only be used in this project. It is empty for
+    // users, who can use every project of their organisation.
+    string project_name = 4;
+    // api_key_access is an API key's access level on its project. It is unspecified for users and service accounts.
+    APIKeyAccess api_key_access = 5;
+    // email is the user's email address (users only; may be empty).
+    string email = 6;
+}
+
+// PrincipalType is the kind of credential a caller authenticated with.
+enum PrincipalType {
+    PRINCIPAL_TYPE_UNSPECIFIED = 0;
+    // A dashboard user, signed in with Firebase.
+    PRINCIPAL_TYPE_USER = 1;
+    // A perms.io API key.
+    PRINCIPAL_TYPE_API_KEY = 2;
+    // A Google service account (internal callers).
+    PRINCIPAL_TYPE_SERVICE_ACCOUNT = 3;
+}
+
+// APIKeyAccess is the level of access an API key has on its project, as reported by WhoAmI. It is derived from what
+// the key is actually allowed to do, so a key whose access has been changed by hand may report UNSPECIFIED.
+enum APIKeyAccess {
+    // Not an API key, or a key whose permissions match neither level.
+    API_KEY_ACCESS_UNSPECIFIED = 0;
+    // The key can run checks and read the project's permissions, roles, grants and groups.
+    API_KEY_ACCESS_CHECK = 1;
+    // The key can also create, update and delete permissions, roles and groups, and grant and revoke.
+    API_KEY_ACCESS_FULL = 2;
+}
