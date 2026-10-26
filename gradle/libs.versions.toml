@@ -1,0 +1,27 @@
+[versions]
+grpc = "1.85.1"
+# protoc and protobuf-java move together: generated code needs a runtime at least
+# as new as protoc. 4.33.4 is what pgv-java-stub already requires.
+protobuf = "4.33.4"
+pgv = "1.3.3"
+junit = "5.13.4"
+assertj = "3.27.7"
+
+[libraries]
+grpc-bom = { module = "io.grpc:grpc-bom", version.ref = "grpc" }
+grpc-api = { module = "io.grpc:grpc-api" }
+grpc-stub = { module = "io.grpc:grpc-stub" }
+grpc-protobuf = { module = "io.grpc:grpc-protobuf" }
+grpc-netty-shaded = { module = "io.grpc:grpc-netty-shaded" }
+grpc-inprocess = { module = "io.grpc:grpc-inprocess" }
+protobuf-java = { module = "com.google.protobuf:protobuf-java", version.ref = "protobuf" }
+pgv-java-stub = { module = "build.buf.protoc-gen-validate:pgv-java-stub", version.ref = "pgv" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+assertj = { module = "org.assertj:assertj-core", version.ref = "assertj" }
+
+[plugins]
+protobuf = { id = "com.google.protobuf", version = "0.9.6" }
+spotless = { id = "com.diffplug.spotless", version = "8.10.3" }
+maven-publish = { id = "com.vanniktech.maven.publish", version = "0.36.0" }

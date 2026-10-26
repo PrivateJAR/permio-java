@@ -1,0 +1,24 @@
+syntax = "proto3";
+package pagination;
+
+option go_package = "github.com/PrivateJAR/permio-go/proto/pagination/v1;paginationv1";
+option java_package = "io.perms.proto.pagination.v1";
+option java_multiple_files = true;
+option java_outer_classname = "PaginationProto";
+
+import "google/api/annotations.proto";
+import "validate/validate.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+message PaginationRequest {
+  // The number of items to return. Must be between 1 and 100. Default is 10.
+  optional int32 limit = 1 [(validate.rules).int32 = { gte: 1, lte: 100 }];
+  // The cursor to start from. If not provided, starts from the beginning.
+  optional string cursor = 2;
+}
+
+message PaginationResponse {
+  // The next cursor to use for the next page of results. If there are no more pages, this will be empty.
+  string next_cursor = 1;
+}

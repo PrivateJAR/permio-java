@@ -1,0 +1,51 @@
+name: Release to Maven Central
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # Maven Central has no runner requirement (no provenance / trusted
+    # publishing), so this runs on Blacksmith like CI.
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    environment: maven-central
+    steps:
+      - uses: useblacksmith/checkout@v1
+      - uses: gradle/actions/wrapper-validation@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - name: Check the tag matches gradle.properties
+        run: |
+          VERSION="$(sed -n 's/^version=//p' gradle.properties)"
+          if [ "v${VERSION}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match version ${VERSION} in gradle.properties"
+            exit 1
+          fi
+      - name: Check the publishing secrets are set
+        env:
+          USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          for name in USERNAME PASSWORD KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing secret for ${name}; see README 'Releasing'"
+              exit 1
+            fi
+          done
+      - name: Build and test
+        run: ./gradlew --no-daemon build
+      - name: Publish and release
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon publishAndReleaseToMavenCentral --no-configuration-cache

@@ -1,0 +1,92 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: useblacksmith/checkout@v1
+      - uses: gradle/actions/wrapper-validation@v6
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle # actions/cache, which Blacksmith backs
+      - name: Format (google-java-format, ktlint) and javadoc
+        run: ./gradlew --no-daemon spotlessCheck javadoc
+
+  build:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    steps:
+      - uses: useblacksmith/checkout@v1
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - name: Build the jars and publish to the local Maven repository (unsigned)
+        run: ./gradlew --no-daemon assemble publishToMavenLocal
+      - name: Check the bytecode targets Java 11
+        run: |
+          unzip -o -q build/libs/permio-*[0-9].jar io/perms/Permio.class -d /tmp/permio-classes
+          javap -v /tmp/permio-classes/io/perms/Permio.class | grep -q 'major version: 55'
+
+  test:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    strategy:
+      fail-fast: false
+      matrix:
+        java: [11, 17, 21, 25]
+    steps:
+      - uses: useblacksmith/checkout@v1
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          # The test JDK first; the last one listed (21) becomes JAVA_HOME and runs Gradle.
+          java-version: |
+            ${{ matrix.java }}
+            21
+          cache: gradle
+      - name: Unit tests on Java ${{ matrix.java }}
+        run: >-
+          ./gradlew --no-daemon test
+          -PtestJavaVersion=${{ matrix.java }}
+          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_${{ matrix.java }}_X64
+
+  integration:
+    needs: test
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    # Runs sharing a project must not overlap: they use the same fixed IDs.
+    concurrency:
+      group: permio-java-integration
+      cancel-in-progress: false
+    steps:
+      - name: Check for the API key
+        id: key
+        env:
+          HAS_KEY: ${{ secrets.PERMIO_DEV_API_KEY != '' }}
+        run: |
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::notice::PERMIO_DEV_API_KEY is not set; skipping the live integration tests."
+          fi
+          echo "enabled=$HAS_KEY" >> "$GITHUB_OUTPUT"
+      - if: steps.key.outputs.enabled == 'true'
+        uses: useblacksmith/checkout@v1
+      - if: steps.key.outputs.enabled == 'true'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+      - name: Live integration tests against dev
+        if: steps.key.outputs.enabled == 'true'
+        env:
+          PERMIO_API_KEY: ${{ secrets.PERMIO_DEV_API_KEY }}
+          PERMIO_BASE_URL: https://dev-api.perms.io
+        run: ./gradlew --no-daemon integrationTest
