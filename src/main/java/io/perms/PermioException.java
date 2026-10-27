@@ -31,6 +31,8 @@ import java.util.regex.Pattern;
  *   <li>{@link PermioTimeoutException}: {@code DEADLINE_EXCEEDED}
  *   <li>{@link PermioRateLimitException}: {@code RESOURCE_EXHAUSTED}
  *   <li>{@link PermioDeniedException}: thrown by {@link Permio#assertAllowed}; not an API error
+ *   <li>{@link PermioTooManyResultsException}: a collect-all helper exceeded its {@code maxResults}
+ *       cap; not an API error
  * </ul>
  *
  * <p>Errors from the raw gRPC stubs ({@link Permio#raw()}) are plain {@code

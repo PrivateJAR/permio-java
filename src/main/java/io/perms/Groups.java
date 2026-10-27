@@ -148,7 +148,7 @@ public final class Groups {
           if (options.search() != null) {
             req.setSearch(options.search());
           }
-          ListGroupsResponse res = permio.stub().listGroups(req.build());
+          ListGroupsResponse res = permio.listStub().listGroups(req.build());
           return new PagedIterable.Page<>(res.getGroupsList(), res.getPagination().getNextCursor());
         },
         options.pageSize());
@@ -223,7 +223,7 @@ public final class Groups {
         p -> {
           ListGroupMembersResponse res =
               permio
-                  .stub()
+                  .listStub()
                   .listGroupMembers(
                       ListGroupMembersRequest.newBuilder()
                           .setProjectName(project)
@@ -256,7 +256,7 @@ public final class Groups {
         p -> {
           ListGroupsForPrincipalResponse res =
               permio
-                  .stub()
+                  .listStub()
                   .listGroupsForPrincipal(
                       ListGroupsForPrincipalRequest.newBuilder()
                           .setProjectName(project)

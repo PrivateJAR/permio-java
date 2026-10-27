@@ -65,3 +65,21 @@ Retry-After work).
   `retry-after` honoured on `RESOURCE_EXHAUSTED`.
 - Generated gRPC stubs for the public API (PrivateJAR/proto v0.0.18), reachable through
   `permio.raw()`.
+
+### Scale guardrails
+- Streaming access queries: `whoHasAccessIterable(resource)`,
+  `whoHasAccessIterable(resource, permission, expandGroups)` and
+  `listAccessIterable(principal, permission, under)`, lazy `PagedIterable`s.
+- `maxResults` overloads: `whoHasAccess(resource, permission, expandGroups, maxResults)`,
+  `listAccess(principal, permission, under, maxResults)` and their `*Async` variants;
+  `PermioTooManyResultsException`.
+- `maxResources` overloads: `batchCheck(principal, permissions, resources, maxResources)`,
+  `batchCheckDetailed(..., maxResources)` and their `*Async` variants.
+- `Builder.listTimeout(Duration)`: per-attempt timeout for list page requests (default: `timeout`).
+- **Behaviour change:** `whoHasAccess` and `listAccess` collect at most 10,000 results
+  (`Permio.DEFAULT_MAX_RESULTS`) and throw `PermioTooManyResultsException` past that, after
+  fetching at most cap + 1 items; they used to follow every page into memory. Use the new
+  `*Iterable` forms or pass `maxResults`.
+- **Behaviour change:** `batchCheck` / `batchCheckDetailed` accept at most 10,000 resources per
+  call (`Permio.DEFAULT_MAX_BATCH_RESOURCES`, counted before de-duplication) and throw
+  `PermioValidationException` above it; pass `maxResources` to change it.

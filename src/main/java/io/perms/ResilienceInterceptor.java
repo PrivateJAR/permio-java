@@ -37,6 +37,13 @@ final class ResilienceInterceptor implements ClientInterceptor {
   static final Metadata.Key<String> AUTHORIZATION =
       Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
 
+  /**
+   * Overrides the client's per-attempt timeout for one call, in nanoseconds (0 disables it). Set by
+   * the list helpers so list pages use the client's {@code listTimeout}.
+   */
+  static final CallOptions.Key<Long> ATTEMPT_TIMEOUT_NANOS =
+      CallOptions.Key.create("permio-attempt-timeout-nanos");
+
   private final String authorization;
   private final long attemptTimeoutNanos;
   private final RetryPolicy retry;
@@ -272,11 +279,15 @@ final class ResilienceInterceptor implements ClientInterceptor {
       }
     }
 
+    private long attemptTimeoutNanos() {
+      Long override = options.getOption(ATTEMPT_TIMEOUT_NANOS);
+      return override != null ? override : attemptTimeoutNanos;
+    }
+
     private void startAttemptInContext() {
+      long timeoutNanos = attemptTimeoutNanos();
       Deadline attemptDeadline =
-          attemptTimeoutNanos > 0
-              ? Deadline.after(attemptTimeoutNanos, TimeUnit.NANOSECONDS)
-              : null;
+          timeoutNanos > 0 ? Deadline.after(timeoutNanos, TimeUnit.NANOSECONDS) : null;
       boolean perAttemptBound = attemptDeadline != null;
       if (overall != null && (attemptDeadline == null || overall.isBefore(attemptDeadline))) {
         attemptDeadline = overall;
@@ -367,7 +378,7 @@ final class ResilienceInterceptor implements ClientInterceptor {
                 Status.DEADLINE_EXCEEDED
                     .withDescription(
                         "request timed out after "
-                            + TimeUnit.NANOSECONDS.toMillis(attemptTimeoutNanos)
+                            + TimeUnit.NANOSECONDS.toMillis(attemptTimeoutNanos())
                             + "ms")
                     .withCause(status.asRuntimeException());
           }

@@ -42,6 +42,7 @@ public final class PagedIterable<T> implements Iterable<T> {
 
   private final Function<PaginationRequest, Page<T>> fetchPage;
   private final int pageSize;
+  private final long maxItems;
 
   /**
    * Iterates any list RPC that uses {@code PaginationRequest} / {@code PaginationResponse}.
@@ -60,8 +61,18 @@ public final class PagedIterable<T> implements Iterable<T> {
    * @param pageSize items per page, clamped to 1..100
    */
   public PagedIterable(Function<PaginationRequest, Page<T>> fetchPage, int pageSize) {
+    this(fetchPage, pageSize, Long.MAX_VALUE);
+  }
+
+  /**
+   * Like {@link #PagedIterable(Function, int)}, but asks the API for at most {@code maxItems} items
+   * in total: each page request is trimmed to the items still wanted, and no page is requested once
+   * {@code maxItems} items have arrived.
+   */
+  PagedIterable(Function<PaginationRequest, Page<T>> fetchPage, int pageSize, long maxItems) {
     this.fetchPage = fetchPage;
     this.pageSize = Math.max(1, Math.min(MAX_PAGE_SIZE, pageSize));
+    this.maxItems = Math.max(1, maxItems);
   }
 
   @Override
@@ -87,14 +98,16 @@ public final class PagedIterable<T> implements Iterable<T> {
     private Iterator<T> current = Collections.emptyIterator();
     private String cursor;
     private boolean last;
+    private long received;
 
     @Override
     public boolean hasNext() {
       while (!current.hasNext()) {
-        if (last) {
+        if (last || received >= maxItems) {
           return false;
         }
-        PaginationRequest.Builder req = PaginationRequest.newBuilder().setLimit(pageSize);
+        int limit = (int) Math.min(pageSize, maxItems - received);
+        PaginationRequest.Builder req = PaginationRequest.newBuilder().setLimit(limit);
         if (cursor != null) {
           req.setCursor(cursor);
         }
@@ -105,6 +118,7 @@ public final class PagedIterable<T> implements Iterable<T> {
           throw PermioException.from(e);
         }
         current = page.items.iterator();
+        received += page.items.size();
         String next = page.nextCursor;
         // An empty cursor ends the listing. A repeated one would loop forever, and stopping there
         // would silently return a partial list, so fail instead.
