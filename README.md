@@ -77,6 +77,7 @@ Permio permio = Permio.builder()
     .baseUrl(Permio.DEV_BASE_URL)     // default: Permio.DEFAULT_BASE_URL (production)
     .project("my-app")                // default project_name for every helper
     .timeout(Duration.ofSeconds(5))   // per attempt; default 10 s, Duration.ZERO disables it
+    .listTimeout(Duration.ofSeconds(30)) // per list page attempt; default: timeout
     .retries(3)                       // idempotent reads only; default 2
     .build();
 ```
@@ -87,6 +88,7 @@ Permio permio = Permio.builder()
 | `baseUrl` / `endpoint` | `https://api.perms.io` | `https://host[:port]` (TLS) or `http://host[:port]` (plaintext, local testing). |
 | `project` | none | Required by every helper except `whoAmI()`. Override per call with `permio.withProject("other")`. |
 | `timeout` | 10 s | Per attempt. |
+| `listTimeout` | `timeout` | Per attempt, for each list page request (list helpers, iterables, `whoHasAccess`, `listAccess`). |
 | `retryPolicy` / `retries` | 2 retries, 100 ms base, 2 s max | See [Retries](#retries). |
 | `channel` | built from `baseUrl` | Inject any `io.grpc.Channel` (e.g. in-process for tests). Not closed by the client. |
 | `executor` | pool of 8 daemon threads | Runs the `*Async` methods; each holds a thread for the call's duration and further calls queue. Pass your own to size it. Not shut down by the client. |
@@ -108,14 +110,18 @@ permio.checkAll(principal, List.of("docs.read", "docs.write"), "/docs/1"); // ev
 permio.checkAny(principal, List.of("docs.read", "docs.admin"), "/docs/1"); // at least one
 permio.checkDetailed(principal, perms, resources);   // CheckResult: allowed + what is missing
 permio.assertAllowed(principal, "docs.read", "/docs/1"); // throws PermioDeniedException
-permio.batchCheck(principal, "docs.read", uris);     // Map<String, Boolean> in request order (>100 split up, 4 chunks in flight)
+permio.batchCheck(principal, "docs.read", uris);     // Map<String, Boolean> in request order (>100 split up, 4 chunks in flight, max 10,000 resources)
 permio.checkAsync(principal, "docs.read", "/docs/1"); // CompletableFuture<Boolean>
 // Checks, access queries, grant/revoke, whoAmI and group writes/gets have *Async variants.
 
-// Access queries (every page is fetched)
+// Access queries (every page is fetched, at most 10,000 results; see "Large results")
 AccessScopes access = permio.listAccess(principal, "docs.read", "/docs");
 access.coversAll(); access.toPrefixes(); access.toRegex(); access.allows("/docs/1");
 List<AccessEntry> who = permio.whoHasAccess("/docs/1", "docs.read", /* expandGroups */ true);
+
+// Streaming access queries (lazy PagedIterable, one page in memory at a time)
+for (AccessEntry e : permio.whoHasAccessIterable("/docs/1")) { ... }
+permio.listAccessIterable(principal, "docs.read", "/docs").stream()...
 
 // Lists (lazy Iterable, also .stream() and .toList())
 for (Permission p : permio.listPermissions()) { ... }
@@ -128,6 +134,28 @@ permio.listGrants(principal);                        // alias: listAssignments
 `listGrants`, `groups().listMembers` and `groups().listForPrincipal` cannot search and throw
 `IllegalArgumentException` if given a search. A list whose API cursor repeats throws
 `PermioException` rather than silently ending early.
+
+### Large results
+
+A resource may have millions of principals with access, so the collect-all `whoHasAccess` and
+`listAccess` stop at `maxResults` results (default `Permio.DEFAULT_MAX_RESULTS`, 10,000) and throw
+`PermioTooManyResultsException` (with `maxResults()`) instead of filling memory. They fetch at most
+`maxResults + 1` items. Either stream with `whoHasAccessIterable` / `listAccessIterable`, which
+fetch one page at a time as you iterate and have no cap, or pass a larger cap:
+
+```java
+permio.whoHasAccess("/docs/1", null, false, 50_000);   // maxResults
+permio.listAccess(principal, "docs.read", "/docs", 50_000);
+```
+
+A streamed `listAccessIterable` reports "covers everything under `under`" as a single `SUBTREE`
+scope whose URI is `under`.
+
+`batchCheck` / `batchCheckDetailed` accept at most `Permio.DEFAULT_MAX_BATCH_RESOURCES` (10,000)
+resources per call, counted as given (before de-duplication); more throws
+`PermioValidationException` before any request is sent. Pass `maxResources` to change it:
+`permio.batchCheck(principal, List.of("docs.read"), uris, 20_000)`. Requests of 100 resources are
+built as they are sent, at most 4 in flight; the first failing one is thrown.
 
 ```java
 // Grants (never retried automatically)
@@ -178,6 +206,7 @@ and the original exception as the cause.
 | `PermioTimeoutException` | `DEADLINE_EXCEEDED`. |
 | `PermioRateLimitException` | `RESOURCE_EXHAUSTED`; `retryAfter()` from `RetryInfo` or `retry-after`. |
 | `PermioDeniedException` | Thrown by `assertAllowed` when the *principal* is denied; `missing()` lists what. |
+| `PermioTooManyResultsException` | `whoHasAccess` / `listAccess` found more than `maxResults` results; `maxResults()`. Use the `*Iterable` form or raise the cap. |
 
 Other codes (e.g. `ALREADY_EXISTS`) are a base `PermioException`. Async methods complete
 exceptionally with the same types.
@@ -193,6 +222,10 @@ A rate-limited read (`RESOURCE_EXHAUSTED`) is retried only when the server says 
 (`google.rpc.RetryInfo` detail, or a `retry-after` header) and that delay is within `maxDelay`;
 otherwise `PermioRateLimitException` is thrown with `retryAfter()`. A `retry-after` on
 `UNAVAILABLE` is used as the minimum backoff.
+
+Each list page is its own read: a page that times out or is unavailable is retried after the
+same backoff (never immediately), and a rate-limited page waits for the server's delay. Pages use
+`listTimeout` per attempt.
 
 Writes, including grant and revoke, are sent exactly once: after a timeout the first attempt may
 still have landed, and repeating it could undo another caller's change. Retry them yourself if

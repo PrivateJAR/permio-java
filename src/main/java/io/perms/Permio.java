@@ -105,6 +105,19 @@ public final class Permio implements AutoCloseable {
    */
   public static final int DEFAULT_ASYNC_THREADS = 8;
 
+  /**
+   * Default cap on the results {@link #whoHasAccess} and {@link #listAccess} collect into memory.
+   * Past it they throw {@link PermioTooManyResultsException}; iterate {@link #whoHasAccessIterable}
+   * or {@link #listAccessIterable} instead, or pass a larger {@code maxResults}.
+   */
+  public static final int DEFAULT_MAX_RESULTS = 10_000;
+
+  /**
+   * Default cap on the resources one {@link #batchCheck} call accepts. Past it the call throws
+   * {@link PermioValidationException} before sending anything.
+   */
+  public static final int DEFAULT_MAX_BATCH_RESOURCES = 10_000;
+
   /** At most this many {@code BatchCheck} chunk requests are in flight per batch check. */
   static final int MAX_PARALLEL_CHUNKS = 4;
 
@@ -126,6 +139,7 @@ public final class Permio implements AutoCloseable {
     final ExecutorService ownedExecutor;
     final ApiKeys.Kind apiKeyKind;
     final String baseUrl;
+    final long listTimeoutNanos;
 
     Core(
         Channel channel,
@@ -135,7 +149,8 @@ public final class Permio implements AutoCloseable {
         Executor executor,
         ExecutorService ownedExecutor,
         ApiKeys.Kind apiKeyKind,
-        String baseUrl) {
+        String baseUrl,
+        long listTimeoutNanos) {
       this.channel = channel;
       this.ownedChannel = ownedChannel;
       this.scheduler = scheduler;
@@ -144,6 +159,7 @@ public final class Permio implements AutoCloseable {
       this.ownedExecutor = ownedExecutor;
       this.apiKeyKind = apiKeyKind;
       this.baseUrl = baseUrl;
+      this.listTimeoutNanos = listTimeoutNanos;
     }
   }
 
@@ -456,8 +472,12 @@ public final class Permio implements AutoCloseable {
    * Checks each resource separately and returns, per resource URI, whether {@code principal} holds
    * {@code permission} on it. The map has one entry per distinct resource, in request order. Use it
    * to filter a list you already have in memory. More than 100 resources are split into several
-   * {@code BatchCheck} calls, at most 4 in flight at a time.
+   * {@code BatchCheck} calls, built as they are sent, at most 4 in flight at a time; the first
+   * failing chunk (in request order) is thrown. At most {@link #DEFAULT_MAX_BATCH_RESOURCES}
+   * resources per call (see the {@code maxResources} overloads).
    *
+   * @throws PermioValidationException if there are more than {@link #DEFAULT_MAX_BATCH_RESOURCES}
+   *     resources
    * @throws PermioPermissionException if the API key lacks {@code permission.check}
    */
   public Map<String, Boolean> batchCheck(
@@ -471,8 +491,23 @@ public final class Permio implements AutoCloseable {
    */
   public Map<String, Boolean> batchCheck(
       String principal, Collection<String> permissions, Collection<String> resources) {
+    return batchCheck(principal, permissions, resources, DEFAULT_MAX_BATCH_RESOURCES);
+  }
+
+  /**
+   * Like {@link #batchCheck(String, Collection, Collection)}, accepting at most {@code
+   * maxResources} resources (counted as given, before de-duplication) instead of {@link
+   * #DEFAULT_MAX_BATCH_RESOURCES}.
+   *
+   * @throws PermioValidationException if there are more than {@code maxResources} resources
+   */
+  public Map<String, Boolean> batchCheck(
+      String principal,
+      Collection<String> permissions,
+      Collection<String> resources,
+      int maxResources) {
     Map<String, Boolean> out = new LinkedHashMap<>();
-    for (BatchCheckEntry e : batchCheckDetailed(principal, permissions, resources)) {
+    for (BatchCheckEntry e : batchCheckDetailed(principal, permissions, resources, maxResources)) {
       out.put(e.resource(), e.allowed());
     }
     return Collections.unmodifiableMap(out);
@@ -481,9 +516,35 @@ public final class Permio implements AutoCloseable {
   /** Like {@link #batchCheck}, but returns one entry per resource with the missing permissions. */
   public List<BatchCheckEntry> batchCheckDetailed(
       String principal, Collection<String> permissions, Collection<String> resources) {
+    return batchCheckDetailed(principal, permissions, resources, DEFAULT_MAX_BATCH_RESOURCES);
+  }
+
+  /**
+   * Like {@link #batchCheckDetailed(String, Collection, Collection)}, accepting at most {@code
+   * maxResources} resources (counted as given, before de-duplication).
+   *
+   * @throws PermioValidationException if there are more than {@code maxResources} resources, or
+   *     {@code maxResources} is not positive
+   */
+  public List<BatchCheckEntry> batchCheckDetailed(
+      String principal,
+      Collection<String> permissions,
+      Collection<String> resources,
+      int maxResources) {
     requirePrincipal(principal);
+    if (maxResources <= 0) {
+      throw new PermioValidationException("permio: maxResources must be positive");
+    }
     if (resources == null) {
       throw new PermioValidationException("permio: resources are required");
+    }
+    if (resources.size() > maxResources) {
+      throw new PermioValidationException(
+          "permio: batchCheck accepts at most "
+              + maxResources
+              + " resources per call, got "
+              + resources.size()
+              + "; split the list or raise maxResources");
     }
     List<String> uris = new ArrayList<>(new LinkedHashSet<>(resources));
     if (uris.isEmpty()) {
@@ -551,10 +612,28 @@ public final class Permio implements AutoCloseable {
     return async(() -> batchCheck(principal, permissions, resources));
   }
 
-  /** Async {@link #batchCheckDetailed}. */
+  /** Async {@link #batchCheck(String, Collection, Collection, int)}. */
+  public CompletableFuture<Map<String, Boolean>> batchCheckAsync(
+      String principal,
+      Collection<String> permissions,
+      Collection<String> resources,
+      int maxResources) {
+    return async(() -> batchCheck(principal, permissions, resources, maxResources));
+  }
+
+  /** Async {@link #batchCheckDetailed(String, Collection, Collection)}. */
   public CompletableFuture<List<BatchCheckEntry>> batchCheckDetailedAsync(
       String principal, Collection<String> permissions, Collection<String> resources) {
     return async(() -> batchCheckDetailed(principal, permissions, resources));
+  }
+
+  /** Async {@link #batchCheckDetailed(String, Collection, Collection, int)}. */
+  public CompletableFuture<List<BatchCheckEntry>> batchCheckDetailedAsync(
+      String principal,
+      Collection<String> permissions,
+      Collection<String> resources,
+      int maxResources) {
+    return async(() -> batchCheckDetailed(principal, permissions, resources, maxResources));
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -562,64 +641,109 @@ public final class Permio implements AutoCloseable {
 
   /**
    * Answers "where may {@code principal} use {@code permission} at or below {@code under}?",
-   * following every page. Use the result to filter lists in your database: {@link
-   * AccessScopes#coversAll()} means no filter is needed, {@link AccessScopes#toPrefixes()} gives
-   * path prefixes, {@link AccessScopes#toRegex()} a regex, and {@link AccessScopes#allows} tests a
-   * single URI.
+   * following every page, and collects at most {@link #DEFAULT_MAX_RESULTS} scopes. Use the result
+   * to filter lists in your database: {@link AccessScopes#coversAll()} means no filter is needed,
+   * {@link AccessScopes#toPrefixes()} gives path prefixes, {@link AccessScopes#toRegex()} a regex,
+   * and {@link AccessScopes#allows} tests a single URI.
    *
+   * @throws PermioTooManyResultsException if there are more scopes than the cap; use {@link
+   *     #listAccessIterable} to stream them
    * @throws PermioPermissionException unless the API key has {@code permission.check} on {@code
    *     under} and {@code principal.assignment.get} on the principal
    */
   public AccessScopes listAccess(String principal, String permission, String under) {
+    return listAccess(principal, permission, under, DEFAULT_MAX_RESULTS);
+  }
+
+  /**
+   * Like {@link #listAccess(String, String, String)}, collecting at most {@code maxResults} scopes.
+   * At most {@code maxResults + 1} scopes are fetched.
+   *
+   * @throws PermioTooManyResultsException if there are more than {@code maxResults} scopes
+   * @throws PermioValidationException if {@code maxResults} is not positive
+   */
+  public AccessScopes listAccess(
+      String principal, String permission, String under, int maxResults) {
+    requireMaxResults(maxResults);
+    boolean[] coversAll = {false};
+    List<AccessScopes.Scope> scopes =
+        collect(
+            accessScopes(principal, permission, under, coversAll, (long) maxResults + 1),
+            maxResults,
+            "listAccess",
+            "listAccessIterable");
+    return new AccessScopes(under, coversAll[0], scopes);
+  }
+
+  /**
+   * Streams the scopes of {@link #listAccess(String, String, String)}: "where may {@code principal}
+   * use {@code permission} at or below {@code under}?", ordered by URI, fetched one page at a time
+   * as you iterate, with nothing buffered beyond one page. When the principal holds the permission
+   * on {@code under} itself, the only scope is a {@link AccessScopes.Kind#SUBTREE} scope whose URI
+   * is {@code under}.
+   *
+   * @throws PermioValidationException for malformed inputs (when called)
+   */
+  public PagedIterable<AccessScopes.Scope> listAccessIterable(
+      String principal, String permission, String under) {
+    return accessScopes(principal, permission, under, new boolean[1], Long.MAX_VALUE);
+  }
+
+  private PagedIterable<AccessScopes.Scope> accessScopes(
+      String principal, String permission, String under, boolean[] coversAll, long maxItems) {
     requirePrincipal(principal);
     if (permission == null || permission.isEmpty()) {
       throw new PermioValidationException("permio: permission is required");
     }
     Resources.assertResourceUri(under);
     String projectName = resolveProject();
-    boolean[] coversAll = {false};
-    List<AccessScopes.Scope> scopes = new ArrayList<>();
-    new PagedIterable<ListAccessResponse>(
-            p -> {
-              ListAccessResponse res =
-                  stub()
-                      .listAccess(
-                          ListAccessRequest.newBuilder()
-                              .setProjectName(projectName)
-                              .setPrincipalId(principal)
-                              .setPermission(permission)
-                              .setUnderUri(under)
-                              .setPagination(p)
-                              .build());
-              return new PagedIterable.Page<>(List.of(res), res.getPagination().getNextCursor());
-            },
-            MAX_ITEMS)
-        .forEach(
-            page -> {
-              if (page.getCoversAll()) {
-                coversAll[0] = true;
-              }
-              page.getScopesList()
-                  .forEach(
-                      s ->
-                          scopes.add(
-                              new AccessScopes.Scope(
-                                  s.getUri(), AccessScopes.Kind.of(s.getScope()))));
-            });
-    return new AccessScopes(under, coversAll[0], scopes);
+    return new PagedIterable<>(
+        p -> {
+          ListAccessResponse res =
+              listStub()
+                  .listAccess(
+                      ListAccessRequest.newBuilder()
+                          .setProjectName(projectName)
+                          .setPrincipalId(principal)
+                          .setPermission(permission)
+                          .setUnderUri(under)
+                          .setPagination(p)
+                          .build());
+          if (res.getCoversAll()) {
+            coversAll[0] = true;
+          }
+          List<AccessScopes.Scope> scopes = new ArrayList<>(res.getScopesCount());
+          res.getScopesList()
+              .forEach(
+                  s ->
+                      scopes.add(
+                          new AccessScopes.Scope(s.getUri(), AccessScopes.Kind.of(s.getScope()))));
+          return new PagedIterable.Page<>(scopes, res.getPagination().getNextCursor());
+        },
+        MAX_ITEMS,
+        maxItems);
   }
 
-  /** Async {@link #listAccess}. */
+  /** Async {@link #listAccess(String, String, String)}. */
   public CompletableFuture<AccessScopes> listAccessAsync(
       String principal, String permission, String under) {
     return async(() -> listAccess(principal, permission, under));
   }
 
+  /** Async {@link #listAccess(String, String, String, int)}. */
+  public CompletableFuture<AccessScopes> listAccessAsync(
+      String principal, String permission, String under, int maxResults) {
+    return async(() -> listAccess(principal, permission, under, maxResults));
+  }
+
   /**
-   * Answers "who has access to {@code resource}?", following every page: the principals (groups
-   * included, as {@code group:<slug>}) with a grant on the resource, an ancestor of it, or a {@code
-   * _} wildcard URI matching it, ordered by principal ID, with the grants that give the access.
+   * Answers "who has access to {@code resource}?", following every page and collecting at most
+   * {@link #DEFAULT_MAX_RESULTS} entries: the principals (groups included, as {@code group:<slug>})
+   * with a grant on the resource, an ancestor of it, or a {@code _} wildcard URI matching it,
+   * ordered by principal ID, with the grants that give the access.
    *
+   * @throws PermioTooManyResultsException if there are more entries than the cap; use {@link
+   *     #whoHasAccessIterable} to stream them
    * @throws PermioPermissionException unless the API key has {@code principal.list} and {@code
    *     principal.assignment.list} on the project
    */
@@ -634,40 +758,79 @@ public final class Permio implements AutoCloseable {
    * expandGroups}, every member of each listed group is listed too, once per group.
    */
   public List<AccessEntry> whoHasAccess(String resource, String permission, boolean expandGroups) {
+    return whoHasAccess(resource, permission, expandGroups, DEFAULT_MAX_RESULTS);
+  }
+
+  /**
+   * Like {@link #whoHasAccess(String, String, boolean)}, collecting at most {@code maxResults}
+   * entries. At most {@code maxResults + 1} entries are fetched.
+   *
+   * @throws PermioTooManyResultsException if there are more than {@code maxResults} entries
+   * @throws PermioValidationException if {@code maxResults} is not positive
+   */
+  public List<AccessEntry> whoHasAccess(
+      String resource, String permission, boolean expandGroups, int maxResults) {
+    requireMaxResults(maxResults);
+    return collect(
+        accessEntries(resource, permission, expandGroups, (long) maxResults + 1),
+        maxResults,
+        "whoHasAccess",
+        "whoHasAccessIterable");
+  }
+
+  /**
+   * Streams the entries of {@link #whoHasAccess(String)}, fetched one page at a time as you
+   * iterate, with nothing buffered beyond one page. Use it when a resource may have very many
+   * principals with access.
+   *
+   * <pre>{@code
+   * for (AccessEntry e : permio.whoHasAccessIterable("/docs/1")) { ... }
+   * }</pre>
+   */
+  public PagedIterable<AccessEntry> whoHasAccessIterable(String resource) {
+    return whoHasAccessIterable(resource, null, false);
+  }
+
+  /** Streams the entries of {@link #whoHasAccess(String, String, boolean)}. */
+  public PagedIterable<AccessEntry> whoHasAccessIterable(
+      String resource, String permission, boolean expandGroups) {
+    return accessEntries(resource, permission, expandGroups, Long.MAX_VALUE);
+  }
+
+  private PagedIterable<AccessEntry> accessEntries(
+      String resource, String permission, boolean expandGroups, long maxItems) {
     Resources.assertResourceUri(resource);
     if (permission != null && permission.isEmpty()) {
       throw new PermioValidationException("permio: permission must not be empty");
     }
     String projectName = resolveProject();
-    List<AccessEntry> out = new ArrayList<>();
-    new PagedIterable<PrincipalAccess>(
-            p -> {
-              ListPrincipalsWithAccessRequest.Builder req =
-                  ListPrincipalsWithAccessRequest.newBuilder()
-                      .setProjectName(projectName)
-                      .setResourceUri(resource)
-                      .setExpandGroups(expandGroups)
-                      .setPagination(p);
-              if (permission != null) {
-                req.setPermission(permission);
-              }
-              ListPrincipalsWithAccessResponse res = stub().listPrincipalsWithAccess(req.build());
-              return new PagedIterable.Page<>(
-                  res.getPrincipalsList(), res.getPagination().getNextCursor());
-            },
-            MAX_ITEMS)
-        .forEach(
-            p -> {
-              List<AccessGrantInfo> via = new ArrayList<>();
-              p.getViaList().forEach(g -> via.add(AccessGrantInfo.of(g)));
-              out.add(
-                  new AccessEntry(
-                      p.getPrincipalId(),
-                      p.getIsGroup(),
-                      p.getViaGroup().isEmpty() ? null : p.getViaGroup(),
-                      via));
-            });
-    return Collections.unmodifiableList(out);
+    return new PagedIterable<>(
+        p -> {
+          ListPrincipalsWithAccessRequest.Builder req =
+              ListPrincipalsWithAccessRequest.newBuilder()
+                  .setProjectName(projectName)
+                  .setResourceUri(resource)
+                  .setExpandGroups(expandGroups)
+                  .setPagination(p);
+          if (permission != null) {
+            req.setPermission(permission);
+          }
+          ListPrincipalsWithAccessResponse res = listStub().listPrincipalsWithAccess(req.build());
+          List<AccessEntry> entries = new ArrayList<>(res.getPrincipalsCount());
+          for (PrincipalAccess pa : res.getPrincipalsList()) {
+            List<AccessGrantInfo> via = new ArrayList<>();
+            pa.getViaList().forEach(g -> via.add(AccessGrantInfo.of(g)));
+            entries.add(
+                new AccessEntry(
+                    pa.getPrincipalId(),
+                    pa.getIsGroup(),
+                    pa.getViaGroup().isEmpty() ? null : pa.getViaGroup(),
+                    via));
+          }
+          return new PagedIterable.Page<>(entries, res.getPagination().getNextCursor());
+        },
+        MAX_ITEMS,
+        maxItems);
   }
 
   /** Async {@link #whoHasAccess(String)}. */
@@ -679,6 +842,31 @@ public final class Permio implements AutoCloseable {
   public CompletableFuture<List<AccessEntry>> whoHasAccessAsync(
       String resource, String permission, boolean expandGroups) {
     return async(() -> whoHasAccess(resource, permission, expandGroups));
+  }
+
+  /** Async {@link #whoHasAccess(String, String, boolean, int)}. */
+  public CompletableFuture<List<AccessEntry>> whoHasAccessAsync(
+      String resource, String permission, boolean expandGroups, int maxResults) {
+    return async(() -> whoHasAccess(resource, permission, expandGroups, maxResults));
+  }
+
+  private static void requireMaxResults(int maxResults) {
+    if (maxResults <= 0) {
+      throw new PermioValidationException("permio: maxResults must be positive");
+    }
+  }
+
+  /** Collects {@code items}, throwing once more than {@code maxResults} have arrived. */
+  private static <T> List<T> collect(
+      PagedIterable<T> items, int maxResults, String method, String streamingMethod) {
+    List<T> out = new ArrayList<>();
+    for (T item : items) {
+      if (out.size() == maxResults) {
+        throw new PermioTooManyResultsException(method, streamingMethod, maxResults);
+      }
+      out.add(item);
+    }
+    return Collections.unmodifiableList(out);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -700,7 +888,7 @@ public final class Permio implements AutoCloseable {
           if (options.search() != null) {
             req.setSearch(options.search());
           }
-          ListPermissionsResponse res = stub().listPermissions(req.build());
+          ListPermissionsResponse res = listStub().listPermissions(req.build());
           return new PagedIterable.Page<>(
               res.getPermissionsList(), res.getPagination().getNextCursor());
         },
@@ -722,7 +910,7 @@ public final class Permio implements AutoCloseable {
           if (options.search() != null) {
             req.setSearch(options.search());
           }
-          ListRolesResponse res = stub().listRoles(req.build());
+          ListRolesResponse res = listStub().listRoles(req.build());
           return new PagedIterable.Page<>(res.getRolesList(), res.getPagination().getNextCursor());
         },
         options.pageSize());
@@ -743,7 +931,7 @@ public final class Permio implements AutoCloseable {
           if (options.search() != null) {
             req.setSearch(options.search());
           }
-          ListPrincipalsResponse res = stub().listPrincipals(req.build());
+          ListPrincipalsResponse res = listStub().listPrincipals(req.build());
           return new PagedIterable.Page<>(
               res.getPrincipalsList(), res.getPagination().getNextCursor());
         },
@@ -767,7 +955,7 @@ public final class Permio implements AutoCloseable {
     return new PagedIterable<>(
         p -> {
           GetAllAssignmentsForPrincipalResponse res =
-              stub()
+              listStub()
                   .getAllAssignmentsForPrincipal(
                       GetAllAssignmentsForPrincipalRequest.newBuilder()
                           .setProjectName(projectName)
@@ -954,6 +1142,11 @@ public final class Permio implements AutoCloseable {
     return raw().permissions();
   }
 
+  /** {@link #stub()} with the client's list timeout per attempt, for list page requests. */
+  PermissionsServiceGrpc.PermissionsServiceBlockingStub listStub() {
+    return stub().withOption(ResilienceInterceptor.ATTEMPT_TIMEOUT_NANOS, core.listTimeoutNanos);
+  }
+
   String resolveProject() {
     if (project == null || project.isEmpty()) {
       throw new PermioConfigException(
@@ -1125,6 +1318,7 @@ public final class Permio implements AutoCloseable {
     private String baseUrl = DEFAULT_BASE_URL;
     private String project;
     private Duration timeout = DEFAULT_TIMEOUT;
+    private Duration listTimeout;
     private RetryPolicy retryPolicy = RetryPolicy.DEFAULT;
     private Channel channel;
     private Executor executor;
@@ -1168,6 +1362,18 @@ public final class Permio implements AutoCloseable {
     public Builder timeout(Duration timeout) {
       Objects.requireNonNull(timeout, "timeout");
       this.timeout = timeout.isNegative() ? Duration.ZERO : timeout;
+      return this;
+    }
+
+    /**
+     * Timeout per attempt for each list page request: the list helpers, the iterables and the
+     * collect-all {@link Permio#whoHasAccess} / {@link Permio#listAccess}. Default: the {@link
+     * #timeout} (10 s); {@link Duration#ZERO} disables it. A {@link Permio#withCallTimeout}
+     * deadline still bounds each page.
+     */
+    public Builder listTimeout(Duration listTimeout) {
+      Objects.requireNonNull(listTimeout, "listTimeout");
+      this.listTimeout = listTimeout.isNegative() ? Duration.ZERO : listTimeout;
       return this;
     }
 
@@ -1265,9 +1471,22 @@ public final class Permio implements AutoCloseable {
           new ResilienceInterceptor(key, timeout, retryPolicy, scheduler);
       Channel intercepted = ClientInterceptors.intercept(base, interceptor);
       Core core =
-          new Core(intercepted, owned, scheduler, interceptor, exec, ownedExecutor, kind, url);
+          new Core(
+              intercepted,
+              owned,
+              scheduler,
+              interceptor,
+              exec,
+              ownedExecutor,
+              kind,
+              url,
+              listTimeout == null ? attemptNanos(timeout) : attemptNanos(listTimeout));
       return new Permio(core, project, null, true);
     }
+  }
+
+  private static long attemptNanos(Duration timeout) {
+    return timeout.isZero() ? 0 : timeout.toNanos();
   }
 
   /** A parsed base URL. */
