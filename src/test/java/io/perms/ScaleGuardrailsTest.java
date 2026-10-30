@@ -290,13 +290,13 @@ class ScaleGuardrailsTest {
 
   private static final class AllowAll extends PermissionsServiceGrpc.PermissionsServiceImplBase {
     final List<BatchCheckRequest> requests = new CopyOnWriteArrayList<>();
-    volatile int failOnChunk = -1;
+    /** Fails the request whose first resource is this one (chunks can arrive in any order). */
+    volatile String failOnFirstUri;
 
     @Override
     public void batchCheck(BatchCheckRequest request, StreamObserver<BatchCheckResponse> o) {
-      int n = requests.size();
       requests.add(request);
-      if (n == failOnChunk) {
+      if (request.getResourceUris(0).equals(failOnFirstUri)) {
         o.onError(Status.PERMISSION_DENIED.withDescription("no").asRuntimeException());
         return;
       }
@@ -352,7 +352,7 @@ class ScaleGuardrailsTest {
   @Test
   void batchCheckStopsAtTheFirstFailingChunk() {
     AllowAll svc = new AllowAll();
-    svc.failOnChunk = 1;
+    svc.failOnFirstUri = "/d/100"; // the second chunk
     start(svc);
     assertThatThrownBy(() -> permio.batchCheck("alice", "docs.read", uris(5_000)))
         .isInstanceOf(PermioPermissionException.class);
