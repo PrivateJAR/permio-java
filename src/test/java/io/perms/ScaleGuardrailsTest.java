@@ -290,6 +290,7 @@ class ScaleGuardrailsTest {
 
   private static final class AllowAll extends PermissionsServiceGrpc.PermissionsServiceImplBase {
     final List<BatchCheckRequest> requests = new CopyOnWriteArrayList<>();
+
     /** Fails the request whose first resource is this one (chunks can arrive in any order). */
     volatile String failOnFirstUri;
 
